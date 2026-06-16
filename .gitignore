@@ -1,0 +1,8 @@
+# horos runtime state is machine-local (mode toggle, declared scope, violation log,
+# stop-loop guard). Never share it across machines or commit it.
+.horos/
+
+# macOS / editor noise
+.DS_Store
+*.swp
+*~

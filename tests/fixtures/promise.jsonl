@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"add a parser"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sounds good. Let me implement the parser now."}]}}

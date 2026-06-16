@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"write a parser"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"parser.py","new_string":"def parse(s):\n    out = []\n    for tok in s.split():\n        if tok.isdigit():\n            out.append(int(tok))\n        else:\n            out.append(tok)\n    return out\n"}}]}}

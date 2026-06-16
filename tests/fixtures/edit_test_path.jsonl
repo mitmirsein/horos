@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"add a test"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"tests/helper.py","new_string":"# exercises the D9 decision path\nassert run() == 1\n"}}]}}

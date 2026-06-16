@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"refactor this"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I can take either approach here. Would you like me to proceed with the second one?"}]}}

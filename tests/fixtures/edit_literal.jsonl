@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"seed the config"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"config.py","new_string":"DEFAULTS = [\n    {\"id\": \"D9\", \"v\": 1},\n    {\"id\": \"D8\", \"v\": 2},\n    {\"id\": \"D7\", \"v\": 3},\n]\n\ndef load():\n    return DEFAULTS\n\nx = load()\n"}}]}}

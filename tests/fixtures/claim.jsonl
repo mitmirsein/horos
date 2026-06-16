@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"is the feature ready?"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Yes. The feature is finished and everything works correctly."}]}}

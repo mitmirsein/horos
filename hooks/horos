@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# horos — CLI to declare scope, toggle enforcement, externalize decisions, review log.
+set -euo pipefail
+ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+S="$ROOT/.horos"; mkdir -p "$S"
+
+# read mode robustly (absent file -> warn; bare `< file` would leak a shell error). (D7)
+read_mode() { local m=""; [ -f "$S/mode" ] && m="$(tr -d '[:space:]' < "$S/mode" 2>/dev/null)"; [ -n "$m" ] && printf '%s' "$m" || printf 'warn'; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  scope)
+    sub="${1:-show}"; shift || true
+    case "$sub" in
+      set)
+        [ "$#" -ge 1 ] || { echo "usage: horos scope set <glob>..." >&2; exit 1; }
+        HOROS_S="$S" python3 - "$@" <<'PY'
+import json, os, sys, datetime
+allow = sys.argv[1:]
+path = os.path.join(os.environ["HOROS_S"], "scope.json")
+json.dump({"allow": allow, "declared_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+          open(path, "w"), ensure_ascii=False, indent=2)
+PY
+        echo "scope set: $*" ;;
+      show)  cat "$S/scope.json" 2>/dev/null || echo "(no scope declared)" ;;
+      clear) rm -f "$S/scope.json"; echo "scope cleared" ;;
+      *) echo "usage: horos scope set|show|clear" >&2; exit 1 ;;
+    esac ;;
+  mode)
+    sub="${1:-show}"
+    case "$sub" in
+      warn|block) printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub" ;;
+      show|"")    echo "$(read_mode)" ;;
+      *) echo "usage: horos mode warn|block|show" >&2; exit 1 ;;
+    esac ;;
+  decide)
+    id="${1:-}"; why="${2:-}"; cost="${3:-}"; esc="${4:-}"; files="${5:-}"
+    if [ -z "$id" ] || [ -z "$why" ] || [ -z "$cost" ] || [ -z "$esc" ]; then
+      echo "usage: horos decide D<n> <why> <cost> <escape> [files,csv]" >&2; exit 1; fi
+    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HWHY="$why" HCOST="$cost" HESC="$esc" HFILES="$files" python3 - <<'PY'
+import json, os, datetime
+rec = {"id": os.environ["HID"], "why": os.environ["HWHY"], "cost": os.environ["HCOST"],
+       "escape": os.environ["HESC"],
+       "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
+       "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+with open(os.environ["HOROS_LEDGER"], "a") as f:
+    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+print("recorded " + rec["id"])
+PY
+    ;;
+  log)    tail -n "${1:-20}" "$S/violations.log" 2>/dev/null || echo "(no violations logged)" ;;
+  doctor)
+    echo "root : $ROOT"
+    echo "mode : $(read_mode)"
+    echo "scope: $([ -f "$S/scope.json" ] && echo declared || echo none)"
+    echo "decns: $([ -f "$ROOT/decisions.jsonl" ] && tr -cd '\n' < "$ROOT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
+    echo "skill: $([ -f "$ROOT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
+    echo "hooks:"
+    for h in scope-guard reversibility-guard finish-the-work decision-guard; do
+      f="$ROOT/hooks/$h.sh"
+      printf '  [%s] %s\n' "$([ -x "$f" ] && echo OK || echo MISS)" "$h"
+    done ;;
+  help|*)
+    cat <<'EOF'
+horos — agent discipline harness (philosophies 1/2/3/4/5)
+  horos scope set <glob>...   declare the editable boundary             (philosophy 3)
+  horos scope show | clear
+  horos mode warn|block|show  staged enforcement toggle
+  horos decide D<n> <why> <cost> <escape> [files]   externalize a decision  (philosophy 2)
+  horos log [N]               recent violations
+  horos doctor                installation check
+EOF
+    ;;
+esac
