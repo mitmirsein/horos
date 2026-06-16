@@ -5,7 +5,7 @@
 # Design contracts:
 #  - warn mode  : never blocks; notifies the human via systemMessage + logs. (observation stage)
 #  - block mode : actually denies (PreToolUse) / continues the turn (Stop) + logs.
-#  - JSON is parsed/emitted with python3 stdlib only (portable across the user's M1/Intel macs).
+#  - JSON is parsed/emitted with python3 stdlib only (portable, no platform-specific deps).
 
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
   HOROS_ROOT="$CLAUDE_PROJECT_DIR"
