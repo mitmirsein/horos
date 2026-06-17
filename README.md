@@ -56,6 +56,7 @@ hooks/
   finish-the-work.sh     철학 5 (+ session_id 기반 무한루프 가드)
   decision-guard.sh      철학 2 (D-id 결정 · A-id 아포리아 참조무결성)
   claim-guard.sh         감사층 (떨궈진 claim 의 형식·신선도·불변식·교차참조, D9)
+  parent-bridge.sh       조상 세션 위임 브리지 (D11): horos 하위 작업만 골라 horos 훅에 위임
   horos                  CLI: scope / mode / decide / aporia / claim / log / doctor
 decisions.jsonl          철학 2 ledger: 결정 {id, why, cost, escape, …} · 아포리아 {id, type:"aporia", poles, why_unresolved, trigger, …} (커밋 대상)
 tests/
@@ -79,6 +80,36 @@ hooks/horos doctor                   # 설치 점검
 ```
 
 Claude Code 가 대상 프로젝트를 열면 훅이 자동 활성화된다(첫 실행 시 신뢰 승인). 강도는 기본 `warn`.
+
+## 부모(조상) 세션에서 강제하기
+
+Claude Code 는 **프로젝트 루트의** `.claude/settings.json` 에서만 훅을 읽는다. horos 가 멀티프로젝트
+워크스페이스의 *하위* 폴더이고 루트를 그 조상으로 열면, horos 자신의 훅은 잠들어 있다 —
+horos 를 자체 프로젝트로 열거나, **조상 루트에 `parent-bridge.sh` 를 등록**해야 강제된다.
+
+브리지는 각 이벤트에서 (1) 작업이 horos 하위인지 판정하고, (2) 맞으면 `CLAUDE_PROJECT_DIR` 를
+horos 로 고정해 실제 horos 훅에 위임하며, (3) 아니면 즉시 통과한다(다른 프로젝트 무영향).
+어떤 오류에도 fail-open. 조상 `.claude/settings.json` 에 세 줄을 등록한다(경로는 환경에 맞게):
+
+```json
+{ "hooks": {
+  "PreToolUse": [
+    { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "command",
+      "command": "[ -f \"$HOME/…/horos/hooks/parent-bridge.sh\" ] && bash \"$HOME/…/horos/hooks/parent-bridge.sh\" pre-edit || true" }] },
+    { "matcher": "Bash", "hooks": [{ "type": "command",
+      "command": "… parent-bridge.sh pre-bash || true" }] }
+  ],
+  "Stop": [ { "matcher": "*", "hooks": [{ "type": "command",
+      "command": "… parent-bridge.sh stop || true" }] } ]
+}}
+```
+
+- `pre-edit` → scope-guard(편집 파일이 horos 하위일 때) · `pre-bash` → reversibility-guard(cwd 가
+  horos 이거나 명령이 horos 경로 참조) · `stop` → finish/decision/claim 을 한 번에(세션이 horos
+  파일을 건드렸을 때, 세 판정을 병합해 1회 출력).
+- **한계**: `decision`/`claim` 은 horos 하위 파일만 판정한다(D10, `CLAUDE_PROJECT_DIR` 밖 절대경로 무시).
+  `finish` 는 세션-전역이라 혼합 세션에선 세션 끝 전체를 평가한다. 정밀 강제가 필요하면 horos 를
+  자체 프로젝트로 열어라. settings.json 변경은 **다음 세션부터** 적용된다(훅은 세션 시작 시 로드).
 
 ## 사용
 

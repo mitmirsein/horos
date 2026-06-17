@@ -144,6 +144,27 @@ expect "finish-the-work blocks on dual-violation" '"decision": "block"' "$(fin m
 mode block; reset_guard; rgd
 expect "decision-guard blocks on dual-violation"  '"decision": "block"' "$(fin m2b "$FIX/dual_violation.jsonl" | "$HOOKS/decision-guard.sh")"
 
+echo "== D10: edits outside CLAUDE_PROJECT_DIR are ignored (parent-session scoping) =="
+mode block; rgd
+expect_empty "decision-guard: out-of-project file dropped -> pass" "$(fin sx1 "$FIX/edit_code_outside_project.jsonl" | "$HOOKS/decision-guard.sh")"
+mode warn; cgd
+expect_empty "claim-guard: out-of-project file dropped -> pass" "$(fin sx2 "$FIX/edit_code_outside_project.jsonl" | "$HOOKS/claim-guard.sh")"
+
+echo "== D11: parent-bridge -> gate to horos subtree, delegate, leave other projects alone =="
+cp "$HOOKS"/*.sh "$HOOKS/horos" "$TMP/hooks/" 2>/dev/null || true
+chmod +x "$TMP/hooks"/*.sh "$TMP/hooks/horos" 2>/dev/null || true
+BR="$TMP/hooks/parent-bridge.sh"
+"$TMP/hooks/horos" scope set 'hooks/**' 'README.md' >/dev/null 2>&1 || true
+mode block
+expect "pre-edit horos file (out of scope) -> delegate scope deny" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/secret.txt"}}' "$TMP" | "$BR" pre-edit)"
+expect_empty "pre-edit NON-horos file -> bridge passes (other project untouched)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"/elsewhere/secret.txt"}}' | "$BR" pre-edit)"
+expect "pre-bash horos cwd + rm -rf -> delegate reversibility deny" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$TMP" | "$BR" pre-bash)"
+expect_empty "pre-bash NON-horos cwd + rm -rf -> bridge passes" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"/elsewhere"}' | "$BR" pre-bash)"
+printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"%s/app.py","new_string":"a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\ni\\n"}}]}}\n' "$TMP" > "$TMP/bridge_tp.jsonl"
+mode warn; reset_guard; rgd; cgd
+expect "stop: horos edit -> bridged guards warn" "[horos:warn]" "$(printf '{"session_id":"bz1","transcript_path":"%s","hook_event_name":"Stop"}' "$TMP/bridge_tp.jsonl" | "$BR" stop)"
+expect_empty "stop: non-horos session -> bridge passes" "$(fin bz2 "$FIX/promise.jsonl" | "$BR" stop)"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

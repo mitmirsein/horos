@@ -25,7 +25,7 @@ if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
 [[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
 if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 
-verdict="$(HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" python3 - <<'PY'
+verdict="$(HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_ROOT="$HOROS_ROOT" python3 - <<'PY'
 import json, os, re
 CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".c",".cpp",".cc",".h",".hpp",".php",".swift",".kt",".scala",
@@ -33,6 +33,11 @@ CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
 TESTISH = re.compile(r'(?:^|/)(?:tests?|fixtures?|spec|__tests__)(?:/|$)|\.(?:test|spec)\.')
 COMMENT = re.compile(r'(?:#|//)\s*(.*)')
 DREF = re.compile(r'\b[DA]\d+\b')              # D8: decisions (D) and aporias (A)
+ROOT = os.environ.get("HOROS_ROOT", "").rstrip('/')   # D10: only judge files inside this project
+def in_project(fp):                            # D10: drop edits outside CLAUDE_PROJECT_DIR (parent-session bridge)
+    if not fp.startswith('/'):                 # relative path -> assume in-project (fixtures, rel edits)
+        return True
+    return bool(ROOT) and (fp == ROOT or fp.startswith(ROOT + '/'))
 changed_files = set(); new_lines = 0; refs = set()
 with open(os.environ["HOROS_TP"]) as f:
     for line in f:
@@ -47,6 +52,7 @@ with open(os.environ["HOROS_TP"]) as f:
             inp = b.get("input", {}) or {}
             fp = inp.get("file_path", "") or ""
             if not fp.endswith(CODE_EXT): continue
+            if not in_project(fp): continue            # D10: skip files outside this project
             if TESTISH.search(fp): continue            # D3: skip test / fixture files
             changed_files.add(fp)
             blob = " ".join(str(inp.get(k, "")) for k in ("new_string", "content"))

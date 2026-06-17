@@ -34,8 +34,12 @@ CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".c",".cpp",".cc",".h",".hpp",".php",".swift",".kt",".scala",
             ".clj",".ex",".exs",".lua",".pl",".mjs",".cjs",".vue",".dart")
 TESTISH = re.compile(r'(?:^|/)(?:tests?|fixtures?|spec|__tests__)(?:/|$)|\.(?:test|spec)\.')
-ROOT = os.environ["HROOT"]
+ROOT = os.environ["HROOT"].rstrip('/')
 KINDS = ("completion", "consistency")
+def in_project(fp):                            # D10: only consider files inside this project (parent-session bridge)
+    if not fp.startswith('/'):                 # relative -> assume in-project (fixtures, rel edits)
+        return True
+    return bool(ROOT) and (fp == ROOT or fp.startswith(ROOT + '/'))
 
 # 1) this session's changed code files (same rule as decision-guard; test/fixture paths skipped)
 changed = set(); new_lines = 0
@@ -52,6 +56,7 @@ with open(os.environ["HOROS_TP"]) as f:
             inp = b.get("input", {}) or {}
             fp = inp.get("file_path", "") or ""
             if not fp.endswith(CODE_EXT): continue
+            if not in_project(fp): continue            # D10: skip files outside this project
             if TESTISH.search(fp): continue
             changed.add(fp)
             blob = " ".join(str(inp.get(k, "")) for k in ("new_string", "content"))

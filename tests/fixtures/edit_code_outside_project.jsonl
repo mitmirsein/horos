@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"edit a file in a DIFFERENT project"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/elsewhere/other_project/app.py","new_string":"a\nb\nc\nd\ne\nf\ng\nh\ni  # D99 undefined\n"}}]}}
