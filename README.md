@@ -20,13 +20,16 @@
 
 | 작업 철학 | 기계 판정 프록시 | 강제 지점 | 상태 |
 |---|---|---|---|
-| **2. 결정 외화** | 변경 코드 **주석**의 `D<n>` 참조 ∈ ledger(why·cost·escape 완비)? | Stop(decision-guard) | ✅ MVP |
+| **2. 결정 외화** | 변경 코드 **주석**의 `D<n>`(결정)·`A<n>`(아포리아) 참조 ∈ ledger 완비? (결정=why·cost·escape / 아포리아=poles·why_unresolved·trigger) | Stop(decision-guard) | ✅ MVP |
 | **3. 경계 수렴** | 수정 파일 ∈ 선언된 scope allowlist? | PreToolUse(Edit\|Write\|MultiEdit) | ✅ MVP |
 | **4. 가역성** | 명령이 파괴·비가역 패턴 매치? | PreToolUse(Bash) | ✅ MVP |
 | **5. 완료 정의** | 약속만 하고 멈춤 / 도구 0회로 완료 선언? | Stop(finish-the-work) | ✅ MVP |
 | **1. 불신/계약** | clamp·경계값·재조립 (코드 품질, 기계 판정 난망) | contract-first 스킬 | ✅ 규율층 |
+| **감사층 (claim-gate)** | 에이전트가 떨군 claim ⊨ schema·바인딩 신선도·내부 불변식·교차참조? (의미 진리 제외) | Stop(claim-guard) | 🆕 warn |
 
 **훅으로 떨어지는 {2,3,4,5}** 는 결정론적으로 강제하고, 기계 판정이 안 되는 **{1 불신}은 `contract-first` 스킬(규율층)**으로 안내한다 — 5철학 전부 커버한다.
+
+그 위에 **감사층(claim-gate)** 을 둔다 — LLM(에이전트)이 변경에 대한 *주장(claim)* 을 떨구면(`horos claim`), stdlib 훅이 그 주장의 **형식·바인딩 신선도·내부 불변식·교차참조**를 결정론으로 판정한다. **LLM 은 훅에 들어가지 않는다**(번역은 에이전트, 판정은 엔진 — 비결정론은 게이트 밖에 격리). 의미 *진리* 는 판정하지 않으므로(형식이 맞는 거짓도 통과) 기본 `warn` 이다.
 
 ## 단계적 강제 (warn → block)
 
@@ -43,7 +46,7 @@ hooks/horos mode block         # 충분히 검증되면 승격
 
 ```
 .claude/
-  settings.json          PreToolUse(Edit|Write|MultiEdit, Bash) + Stop(2훅) 등록
+  settings.json          PreToolUse(Edit|Write|MultiEdit, Bash) + Stop(3훅) 등록
   commands/              /scope · /horos-mode
   skills/contract-first/ SKILL.md — 철학 1 규율층 스킬
 hooks/
@@ -51,13 +54,14 @@ hooks/
   scope-guard.sh         철학 3
   reversibility-guard.sh 철학 4
   finish-the-work.sh     철학 5 (+ session_id 기반 무한루프 가드)
-  decision-guard.sh      철학 2 (D-id 참조무결성)
-  horos                  CLI: scope / mode / decide / log / doctor
-decisions.jsonl          철학 2 ledger: {id, why, cost, escape, files, date} (커밋 대상)
+  decision-guard.sh      철학 2 (D-id 결정 · A-id 아포리아 참조무결성)
+  claim-guard.sh         감사층 (떨궈진 claim 의 형식·신선도·불변식·교차참조, D9)
+  horos                  CLI: scope / mode / decide / aporia / claim / log / doctor
+decisions.jsonl          철학 2 ledger: 결정 {id, why, cost, escape, …} · 아포리아 {id, type:"aporia", poles, why_unresolved, trigger, …} (커밋 대상)
 tests/
   run.sh                 합성 JSON × warn/block 양모드 단위검증 (격리된 CLAUDE_PROJECT_DIR)
   fixtures/*.jsonl       합성 transcript
-.horos/                  런타임 상태 (gitignore, machine-local)
+.horos/                  런타임 상태 (gitignore, machine-local): mode·scope·violations·claims.jsonl(감사층 주장)
 ```
 
 ## 설치 (다른 프로젝트에 얹기)
@@ -81,19 +85,22 @@ Claude Code 가 대상 프로젝트를 열면 훅이 자동 활성화된다(첫 
 ```
 /scope hooks/** tests/** README.md          # 이번 작업의 편집 경계 선언 (철학 3)
 hooks/horos decide D2 "<why>" "<cost>" "<escape>" "a.py,b.py"   # 결정 외화 (철학 2)
+hooks/horos aporia A1 "<극1>|<극2>" "<why_unresolved>" "<trigger>" "a.py"   # 긴장(아포리아) 외화 (철학 2)
+hooks/horos claim completion "<한 일>" "a.py,tests/test_a.py" "" "tests_added"   # 검증 가능한 주장 떨구기 (감사층)
 /horos-mode block                           # 강도 승격
 hooks/horos doctor                          # 설치 점검
 bash tests/run.sh                           # 단위검증
 ```
 
 scope 미선언 시 scope-guard 는 강제하지 않는다(경계 선언은 능동적 행위라는 철학 3의 전제).
-코드에 `D<n>` 을 주석으로 달면 decision-guard 가 그 참조가 ledger 에 완비됐는지 검사한다.
+코드에 `D<n>`(결정) 또는 `A<n>`(아포리아) 을 주석으로 달면 decision-guard 가 그 참조가 ledger 에 완비됐는지 검사한다. 아포리아는 *해소하지 않고 보류한 긴장*을 1급으로 외화한다 — broken-ref 만 검사하고 미외화(MISSING) 경고는 적용하지 않는다(긴장 표명을 강요하지 않음). 변경에 대해 `horos claim` 으로 주장을 떨구면 claim-guard 가 그 형식·신선도·불변식·교차참조를 결정론으로 판정한다(의미 진리는 에이전트 몫). 유의미 변경에 덮는 주장이 없으면 warn.
 
 ## 한계 (정직하게)
 
 - finish-the-work·decision-guard 의 판정은 **휴리스틱**이다. 견고한 쪽(`promise`=약속-미실행, `D-ref broken`=참조무결성)은
   block 가능하지만, 오탐 많은 쪽(`claim`=증거 없는 완료, `missing`=유의미한 코드변경+D참조0)은 **warn-only** 로 약화했다.
   `missing` 은 사소 변경(<2파일 & <8줄)을 면제해 한 줄 타이포에는 뜨지 않는다.
+- **claim-guard(감사층)** 는 떨궈진 주장의 *형식·바인딩 신선도·내부 불변식·교차참조*만 보장한다. 신선·일관·형식이 맞아도 **의미상 거짓인 주장(coherent lie)은 통과**한다 — 의미 진리는 horos 밖(에이전트 몫)이다. 그래서 구조 위반만 block 가능, 커버리지(주장 누락)는 warn. 바인딩은 풀파일 sha256 이라 stale 주장은 차단이 아니라 *드롭*되어(정당한 재편집 오탐 방지, D9) 커버리지 경고로 떨어진다.
 - reversibility-guard 는 명령을 패턴 매치한다. **따옴표 안 내용을 마스킹**해 커밋 메시지 등 인자 속 위험 단어 오탐을 제거했다(D4) — 단 heredoc·백틱·변수 확장은 여전히 미파싱이라 완전하지 않다.
 - 한 Stop 이벤트의 finish-the-work·decision-guard 는 **병렬 실행**된다(문서). Stop 은 block(계속)/침묵(멈춤)뿐이라 PreToolUse 같은 allow/deny **충돌이 없다** — 동시 block 이면 두 reason 으로 계속될 뿐이다. 각 훅이 독립적으로 정상 block 을 냄을 테스트로 확인했다(D5).
 - transcript JSONL 스키마(`assistant` 줄의 `message.content[]`)에 의존한다. 스키마가 바뀌면 **fail-open**(조용히 통과) —

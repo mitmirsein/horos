@@ -69,7 +69,10 @@ expect_empty "stop_hook_active -> loop-guard pass" "$(printf '{"session_id":"s6"
 
 echo "== decision-guard (philosophy 2) =="
 rgd(){ rm -f "$TMP/.horos/stop_guard_decision"; }
-printf '%s\n' '{"id":"D1","why":"w","cost":"c","escape":"e"}' > "$TMP/decisions.jsonl"
+{ printf '%s\n' '{"id":"D1","why":"w","cost":"c","escape":"e"}'
+  printf '%s\n' '{"id":"A1","type":"aporia","poles":["sync","async"],"why_unresolved":"u","trigger":"t"}'
+  printf '%s\n' '{"id":"A2","type":"aporia","poles":["x"],"why_unresolved":"u"}'
+} > "$TMP/decisions.jsonl"
 mode warn; rgd
 expect_empty "trivial code change (1 line), no D-ref -> exempt" "$(fin sd1 "$FIX/edit_code_noref.jsonl" | "$HOOKS/decision-guard.sh")"
 mode warn; rgd
@@ -86,6 +89,54 @@ mode block; rgd
 expect_empty "D-ref in test-path file -> ignored (D3)" "$(fin sd6 "$FIX/edit_test_path.jsonl" | "$HOOKS/decision-guard.sh")"
 mode block; rgd
 expect "literal (non-comment) D-ref -> not broken, missing warn (D3)" "[horos:warn]" "$(fin sd7 "$FIX/edit_literal.jsonl" | "$HOOKS/decision-guard.sh")"
+
+echo "== decision-guard: aporia (A-id) refs (philosophy 2, D8) =="
+mode block; rgd
+expect_empty "good A-ref (aporia complete) -> pass" "$(fin sd8 "$FIX/edit_code_aporia_goodref.jsonl" | "$HOOKS/decision-guard.sh")"
+mode block; rgd
+expect "incomplete A-ref (missing trigger) -> block" '"decision": "block"' "$(fin sd9 "$FIX/edit_code_aporia_incomplete.jsonl" | "$HOOKS/decision-guard.sh")"
+mode block; rgd
+expect "undefined A-ref -> block" '"decision": "block"' "$(fin sd10 "$FIX/edit_code_aporia_brokenref.jsonl" | "$HOOKS/decision-guard.sh")"
+mode warn; rgd
+expect "incomplete A-ref (warn) -> notice" "[horos:warn]" "$(fin sd11 "$FIX/edit_code_aporia_incomplete.jsonl" | "$HOOKS/decision-guard.sh")"
+
+echo "== claim-guard (audit tier, philosophy 1·5, D9) =="
+cgd(){ rm -f "$TMP/.horos/stop_guard_claim"; }
+mkdir -p "$TMP/tests"
+printf 'def g(): return 1\n'           > "$TMP/good.py"
+printf 'def test_g(): assert g()==1\n' > "$TMP/tests/test_good.py"
+printf 'def l(): return 2\n'           > "$TMP/lie.py"
+printf 'def b(): return 3\n'           > "$TMP/badref.py"
+HOROS_S="$TMP/.horos" python3 - "$TMP" <<'PY'
+import json, os, sys, hashlib
+root = sys.argv[1]
+def h(p):
+    with open(os.path.join(root, p), "rb") as f: return hashlib.sha256(f.read()).hexdigest()
+claims = [
+  {"id":"C1","kind":"completion","assert":"add g + test","evidence_files":["good.py","tests/test_good.py"],
+   "binds":{"good.py":h("good.py"),"tests/test_good.py":h("tests/test_good.py")},
+   "refs":["D1"],"claims_true":{"tests_added":True,"consistent_with_refs":True}},
+  {"id":"C2","kind":"completion","assert":"claims tested but no test","evidence_files":["lie.py"],
+   "binds":{"lie.py":h("lie.py")},"claims_true":{"tests_added":True}},
+  {"id":"C3","kind":"consistency","assert":"cites missing decision","evidence_files":["badref.py"],
+   "binds":{"badref.py":h("badref.py")},"refs":["D77"],"claims_true":{"consistent_with_refs":True}},
+]
+with open(os.path.join(os.environ["HOROS_S"], "claims.jsonl"), "w") as f:
+    for c in claims: f.write(json.dumps(c, ensure_ascii=False) + "\n")
+PY
+mode block; cgd
+expect_empty "fresh claim, invariants hold, ref ok -> pass" "$(fin sc1 "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh")"
+mode block; cgd
+expect "claims tests_added but no test file -> block" '"decision": "block"' "$(fin sc2 "$FIX/edit_code_claim_testlie.jsonl" | "$HOOKS/claim-guard.sh")"
+mode block; cgd
+expect "claim cites undefined decision -> block" '"decision": "block"' "$(fin sc3 "$FIX/edit_code_claim_badref.jsonl" | "$HOOKS/claim-guard.sh")"
+mode warn; cgd
+expect "significant change, no covering claim -> warn" "[horos:warn]" "$(fin sc4 "$FIX/edit_code_claim_uncovered.jsonl" | "$HOOKS/claim-guard.sh")"
+mode block; cgd
+expect_empty "trivial uncovered change -> exempt" "$(fin sc5 "$FIX/edit_code_noref.jsonl" | "$HOOKS/claim-guard.sh")"
+printf 'def g(): return 999\n' > "$TMP/good.py"   # mutate bound file -> claim goes stale
+mode block; cgd
+expect_empty "stale claim dropped (re-edit not false-blocked) -> pass" "$(fin sc6 "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh")"
 
 echo "== M2: dual-violation -> both Stop hooks block independently (no allow/deny conflict) =="
 mode block; reset_guard; rgd

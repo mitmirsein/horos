@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"defer the sync/async choice"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"queue.py","new_string":"enqueue(job)  # A1: tension held, see ledger\n"}}]}}

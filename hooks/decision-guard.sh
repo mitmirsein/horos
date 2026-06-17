@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Philosophy 2 — externalize decisions as trackable objects.
-# Stop: if this session changed code, decision ids (D<n>) REFERENCED IN COMMENTS by that code
-# must exist and be complete (why/cost/escape) in the ledger (decisions.jsonl).
-#   - broken/incomplete reference  -> enforce per mode (block-able; clean machine verdict)
-#   - SIGNIFICANT code change with zero D-ref -> warn only (trivial edits exempt)
-# D-refs are read ONLY from comments (#, //), and test/fixture files are skipped, so string
-# literals like {"id":"D1"} in code are not mistaken for decision references (D3).
+# Philosophy 2 — externalize decisions (and held tensions) as trackable objects.
+# Stop: if this session changed code, ids REFERENCED IN COMMENTS by that code must exist and be
+# complete in the ledger (decisions.jsonl). Two id kinds (D8):
+#   - D<n> decision : complete = why + cost + escape
+#   - A<n> aporia   : complete = poles + why_unresolved + trigger (a tension deliberately left open)
+#   - broken/incomplete reference (either kind) -> enforce per mode (block-able; clean machine verdict)
+#   - SIGNIFICANT code change with zero D/A-ref -> warn only (trivial edits exempt; aporia never required)
+# Refs are read ONLY from comments (#, //), and test/fixture files are skipped, so string
+# literals like {"id":"D1"} in code are not mistaken for references (D3).
 set -euo pipefail
 hook_event=Stop
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -30,7 +32,7 @@ CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".clj",".ex",".exs",".lua",".pl",".mjs",".cjs",".vue",".dart")
 TESTISH = re.compile(r'(?:^|/)(?:tests?|fixtures?|spec|__tests__)(?:/|$)|\.(?:test|spec)\.')
 COMMENT = re.compile(r'(?:#|//)\s*(.*)')
-DREF = re.compile(r'\bD\d+\b')
+DREF = re.compile(r'\b[DA]\d+\b')              # D8: decisions (D) and aporias (A)
 changed_files = set(); new_lines = 0; refs = set()
 with open(os.environ["HOROS_TP"]) as f:
     for line in f:
@@ -68,11 +70,15 @@ try:
             if r.get("id"): ledger[r["id"]] = r
 except FileNotFoundError:
     pass
-complete = lambda r: all(str(r.get(k, "")).strip() for k in ("why", "cost", "escape"))
+def complete(r):                               # D8: completeness depends on record kind
+    if r.get("type") == "aporia":
+        return bool(r.get("poles")) and all(str(r.get(k, "")).strip()
+                                             for k in ("why_unresolved", "trigger"))
+    return all(str(r.get(k, "")).strip() for k in ("why", "cost", "escape"))
 broken = []
 for d in sorted(refs):
     if d not in ledger: broken.append(d + "(미정의)")
-    elif not complete(ledger[d]): broken.append(d + "(why/cost/escape 불완전)")
+    elif not complete(ledger[d]): broken.append(d + "(불완전)")
 if broken:
     print("BROKEN\t" + ", ".join(broken)); raise SystemExit
 if not refs:
@@ -87,7 +93,7 @@ case "${verdict%%	*}" in
     detail="$(printf '%s' "$verdict" | cut -f2)"
     printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
     enforce_stop "decision/broken-ref" "$detail" \
-      "코드 주석이 결정 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. 'horos decide D<n> <why> <cost> <escape>' 로 외화하세요." ;;
+      "코드 주석이 결정/아포리아 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. 결정은 'horos decide D<n> <why> <cost> <escape>', 아포리아는 'horos aporia A<n> \"<극1>|<극2>\" <why_unresolved> <trigger>' 로 외화하세요." ;;
   MISSING)
     printf '%s 0\n' "$sid" > "$GUARD"
     log_violation "decision/not-externalized" "significant code change, no D-id reference"

@@ -48,15 +48,78 @@ with open(os.environ["HOROS_LEDGER"], "a") as f:
 print("recorded " + rec["id"])
 PY
     ;;
+  aporia)
+    # D8 — externalize a held tension (aporia) as a ledger record, mirror of `decide`.
+    id="${1:-}"; poles="${2:-}"; why="${3:-}"; trig="${4:-}"; files="${5:-}"
+    if [ -z "$id" ] || [ -z "$poles" ] || [ -z "$why" ] || [ -z "$trig" ]; then
+      echo "usage: horos aporia A<n> \"<pole1>|<pole2>[|...]\" <why_unresolved> <trigger> [files,csv]" >&2; exit 1; fi
+    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HPOLES="$poles" HWHY="$why" HTRIG="$trig" HFILES="$files" python3 - <<'PY'
+import json, os, datetime
+rec = {"id": os.environ["HID"], "type": "aporia",
+       "poles": [x for x in os.environ["HPOLES"].split("|") if x],
+       "why_unresolved": os.environ["HWHY"], "trigger": os.environ["HTRIG"],
+       "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
+       "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+with open(os.environ["HOROS_LEDGER"], "a") as f:
+    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+print("recorded " + rec["id"] + " (aporia)")
+PY
+    ;;
+  claim)
+    # D9 — deposit a verifiable claim about the current change (audit tier). binds = sha256(now).
+    sub="${1:-}"
+    case "$sub" in
+      show)  cat "$S/claims.jsonl" 2>/dev/null || echo "(no claims)"; exit 0 ;;
+      clear) rm -f "$S/claims.jsonl"; echo "claims cleared"; exit 0 ;;
+    esac
+    kind="$sub"; assertion="${2:-}"; files="${3:-}"; refs="${4:-}"; flags="${5:-}"
+    case "$kind" in completion|consistency) ;; *)
+      echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2
+      echo "       horos claim show | clear" >&2; exit 1 ;; esac
+    if [ -z "$assertion" ] || [ -z "$files" ]; then
+      echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2; exit 1; fi
+    HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
+import json, os, datetime, hashlib
+path = os.environ["HCLAIMS"]; ROOT = os.environ["HROOT"]
+def sha(p):
+    try:
+        with open(os.path.join(ROOT, p), "rb") as f: return hashlib.sha256(f.read()).hexdigest()
+    except OSError: return None
+files = [x for x in os.environ["HFILES"].split(",") if x]
+binds = {f: sha(f) for f in files}
+missing = [f for f, h in binds.items() if h is None]
+if missing:
+    raise SystemExit("ERROR: 바인딩할 파일을 찾을 수 없습니다(변경을 먼저 디스크에 반영하세요): " + ", ".join(missing))
+n = 0
+if os.path.exists(path):
+    for line in open(path):
+        line = line.strip()
+        if not line: continue
+        try: r = json.loads(line)
+        except Exception: continue
+        i = str(r.get("id", ""))
+        if i.startswith("C") and i[1:].isdigit(): n = max(n, int(i[1:]))
+flags = [x for x in os.environ.get("HFLAGS", "").split(",") if x]
+rec = {"id": "C%d" % (n + 1), "kind": os.environ["HKIND"], "assert": os.environ["HASSERT"],
+       "evidence_files": files, "binds": binds,
+       "refs": [x for x in os.environ.get("HREFS", "").split(",") if x],
+       "claims_true": {k: True for k in flags},
+       "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+with open(path, "a") as f:
+    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+print("recorded %s (%s, binds %d file(s))" % (rec["id"], rec["kind"], len(files)))
+PY
+    ;;
   log)    tail -n "${1:-20}" "$S/violations.log" 2>/dev/null || echo "(no violations logged)" ;;
   doctor)
     echo "root : $ROOT"
     echo "mode : $(read_mode)"
     echo "scope: $([ -f "$S/scope.json" ] && echo declared || echo none)"
     echo "decns: $([ -f "$ROOT/decisions.jsonl" ] && tr -cd '\n' < "$ROOT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
+    echo "claim: $([ -f "$S/claims.jsonl" ] && tr -cd '\n' < "$S/claims.jsonl" | wc -c | tr -d ' ' || echo 0) deposited (runtime)"
     echo "skill: $([ -f "$ROOT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
     echo "hooks:"
-    for h in scope-guard reversibility-guard finish-the-work decision-guard; do
+    for h in scope-guard reversibility-guard finish-the-work decision-guard claim-guard; do
       f="$ROOT/hooks/$h.sh"
       printf '  [%s] %s\n' "$([ -x "$f" ] && echo OK || echo MISS)" "$h"
     done ;;
@@ -67,6 +130,9 @@ horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos scope show | clear
   horos mode warn|block|show  staged enforcement toggle
   horos decide D<n> <why> <cost> <escape> [files]   externalize a decision  (philosophy 2)
+  horos aporia A<n> "<p1>|<p2>" <why_unresolved> <trigger> [files]   externalize a held tension (philosophy 2)
+  horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
+  horos claim show | clear
   horos log [N]               recent violations
   horos doctor                installation check
 EOF

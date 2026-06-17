@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"two-file change, no claim"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"cov1.py","new_string":"a = 1\n"}},{"type":"tool_use","name":"Edit","input":{"file_path":"cov2.py","new_string":"b = 2\n"}}]}}

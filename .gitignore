@@ -2,6 +2,9 @@
 # stop-loop guard). Never share it across machines or commit it.
 .horos/
 
+# local design proposal (promote to docs/ when published)
+PROPOSAL-*.md
+
 # macOS / editor noise
 .DS_Store
 *.swp
