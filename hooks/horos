@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # horos — CLI to declare scope, toggle enforcement, externalize decisions, review log.
 set -euo pipefail
-ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# ROOT resolution (D13): hooks always receive CLAUDE_PROJECT_DIR from Claude Code, but the CLI is
+# often invoked from a *consuming* project (central single-source model, D12) where it is unset —
+# fall back to the CWD's git root (not this script's dir) so decide/scope/claim land in the project
+# you are in, not in central horos.
+ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 S="$ROOT/.horos"; mkdir -p "$S"
 
 # read mode robustly (absent file -> warn; bare `< file` would leak a shell error). (D7)
@@ -110,19 +114,123 @@ with open(path, "a") as f:
 print("recorded %s (%s, binds %d file(s))" % (rec["id"], rec["kind"], len(files)))
 PY
     ;;
+  install)
+    # D12 — deploy horos into a target project by REFERENCE (one central source), instead of copying
+    # hooks/ in (a copy drifts — see README). Writes hook commands that invoke THIS horos's hooks via
+    # a $HOME-relative path; Claude Code sets CLAUDE_PROJECT_DIR=<target> for hook runs, so lib.sh
+    # resolves HOROS_ROOT=<target> and state/decisions stay per-project. Fail-open if central horos is
+    # absent/moved; idempotent + migrates (strips any prior horos entries before re-pointing).
+    target="${1:-}"
+    [ -n "$target" ] || { echo "usage: horos install <target-project-dir>" >&2; exit 1; }
+    [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
+    HOROS_SRC="$ROOT" HOROS_TARGET="$target" python3 - <<'PY'
+import json, os
+src = os.path.abspath(os.environ["HOROS_SRC"])
+target = os.path.abspath(os.environ["HOROS_TARGET"])
+home = os.path.expanduser("~")
+portable = (src == home or src.startswith(home + os.sep))
+rel = src[len(home):].lstrip("/") if portable else None
+def srcpath(name):
+    return ('"$HOME/%s/hooks/%s"' % (rel, name)) if portable else ('"%s/hooks/%s"' % (src, name))
+def hookcmd(name):                       # fail-open: a missing/moved central horos never blocks the target
+    p = srcpath(name)
+    return "[ -x %s ] && %s || true" % (p, p)
+pre = [
+    {"matcher": "Edit|Write|MultiEdit",
+     "hooks": [{"type": "command", "command": hookcmd("scope-guard.sh"), "timeout": 15}]},
+    {"matcher": "Bash",
+     "hooks": [{"type": "command", "command": hookcmd("reversibility-guard.sh"), "timeout": 15}]},
+]
+stop = [
+    {"matcher": "*", "hooks": [
+        {"type": "command", "command": hookcmd("finish-the-work.sh"), "timeout": 15},
+        {"type": "command", "command": hookcmd("decision-guard.sh"), "timeout": 15},
+        {"type": "command", "command": hookcmd("claim-guard.sh"), "timeout": 20},
+    ]},
+]
+BASENAMES = ("scope-guard.sh", "reversibility-guard.sh", "finish-the-work.sh",
+             "decision-guard.sh", "claim-guard.sh", "parent-bridge.sh")
+def is_horos(entry):
+    return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
+cfgdir = os.path.join(target, ".claude"); os.makedirs(cfgdir, exist_ok=True)
+cfgpath = os.path.join(cfgdir, "settings.json")
+cfg = {}
+if os.path.exists(cfgpath):
+    try:
+        cfg = json.load(open(cfgpath))
+    except Exception as e:
+        raise SystemExit("error: target .claude/settings.json is not valid JSON: %s" % e)
+hooks = cfg.setdefault("hooks", {})
+for ev in ("PreToolUse", "Stop"):        # strip prior horos entries (idempotent + migrate old copy form)
+    if ev in hooks:
+        hooks[ev] = [e for e in hooks[ev] if not is_horos(e)]
+hooks.setdefault("PreToolUse", []).extend(pre)
+hooks.setdefault("Stop", []).extend(stop)
+with open(cfgpath, "w") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
+gi = os.path.join(target, ".gitignore")  # .horos/ is runtime state, machine-local
+lines = open(gi).read().splitlines() if os.path.exists(gi) else []
+if ".horos/" not in lines:
+    with open(gi, "a") as f:
+        f.write(("\n" if (lines and lines[-1] != "") else "") + "# horos runtime state (machine-local)\n.horos/\n")
+print("installed horos (by reference) -> %s" % target)
+print("  central source : %s/hooks" % (("$HOME/" + rel) if portable else src))
+print("  enforcement    : scope-guard, reversibility-guard (PreToolUse) + finish/decision/claim (Stop)")
+if not portable:
+    print("  WARNING: central horos is not under $HOME — wrote an absolute path that may not resolve")
+    print("           on another machine. Move horos under $HOME for multimachine portability.")
+print("  verify         : horos doctor %s" % target)
+print("  note           : hooks load at session start — (re)open the target in Claude Code; mode starts warn.")
+PY
+    ;;
   log)    tail -n "${1:-20}" "$S/violations.log" 2>/dev/null || echo "(no violations logged)" ;;
   doctor)
-    echo "root : $ROOT"
-    echo "mode : $(read_mode)"
-    echo "scope: $([ -f "$S/scope.json" ] && echo declared || echo none)"
-    echo "decns: $([ -f "$ROOT/decisions.jsonl" ] && tr -cd '\n' < "$ROOT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
-    echo "claim: $([ -f "$S/claims.jsonl" ] && tr -cd '\n' < "$S/claims.jsonl" | wc -c | tr -d ' ' || echo 0) deposited (runtime)"
-    echo "skill: $([ -f "$ROOT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
+    DT="${1:-$ROOT}"; DS="$DT/.horos"          # D12: optional [target] — point doctor at a consuming project
+    dmode=""; [ -f "$DS/mode" ] && dmode="$(tr -d '[:space:]' < "$DS/mode" 2>/dev/null)"; [ -n "$dmode" ] || dmode=warn
+    echo "root : $DT"
+    echo "mode : $dmode"
+    echo "scope: $([ -f "$DS/scope.json" ] && echo declared || echo none)"
+    echo "decns: $([ -f "$DT/decisions.jsonl" ] && tr -cd '\n' < "$DT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
+    echo "claim: $([ -f "$DS/claims.jsonl" ] && tr -cd '\n' < "$DS/claims.jsonl" | wc -c | tr -d ' ' || echo 0) deposited (runtime)"
+    echo "skill: $([ -f "$DT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
     echo "hooks:"
-    for h in scope-guard reversibility-guard finish-the-work decision-guard claim-guard; do
-      f="$ROOT/hooks/$h.sh"
-      printf '  [%s] %s\n' "$([ -x "$f" ] && echo OK || echo MISS)" "$h"
-    done ;;
+    # D12: a consuming project has no local hooks/ — it references central horos via settings.json.
+    # Report [OK] for a hook resolvable either locally OR by that reference.
+    HOROS_DT="$DT" python3 - <<'PY'
+import json, os, re
+dt = os.path.abspath(os.environ["HOROS_DT"])
+cmds = []
+p = os.path.join(dt, ".claude", "settings.json")
+if os.path.exists(p):
+    try:
+        cfg = json.load(open(p))
+        for entries in (cfg.get("hooks") or {}).values():
+            for e in entries:
+                for hk in e.get("hooks", []):
+                    c = hk.get("command")
+                    if c: cmds.append(c)
+    except Exception:
+        pass
+def ref_path(name):
+    for c in cmds:
+        if name in c:
+            m = re.search(r'"([^"]*' + re.escape(name) + r')"', c)
+            if m:
+                return os.path.expandvars(os.path.expanduser(m.group(1)))
+    return None
+for h in ("scope-guard", "reversibility-guard", "finish-the-work", "decision-guard", "claim-guard"):
+    name = h + ".sh"
+    local = os.path.join(dt, "hooks", name)
+    if os.access(local, os.X_OK):
+        print("  [OK] %-22s local" % h)
+    else:
+        rp = ref_path(name)
+        if rp and os.access(rp, os.X_OK):
+            print("  [OK] %-22s ref %s" % (h, os.path.dirname(rp)))
+        else:
+            print("  [MISS] %-20s" % h)
+PY
+    ;;
   help|*)
     cat <<'EOF'
 horos — agent discipline harness (philosophies 1/2/3/4/5)
@@ -133,8 +241,9 @@ horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos aporia A<n> "<p1>|<p2>" <why_unresolved> <trigger> [files]   externalize a held tension (philosophy 2)
   horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
   horos claim show | clear
+  horos install <target>      wire a project to THIS central horos by reference, no copy (D12)
   horos log [N]               recent violations
-  horos doctor                installation check
+  horos doctor [target]       installation check (local or referenced wiring)
 EOF
     ;;
 esac

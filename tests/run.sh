@@ -165,6 +165,24 @@ mode warn; reset_guard; rgd; cgd
 expect "stop: horos edit -> bridged guards warn" "[horos:warn]" "$(printf '{"session_id":"bz1","transcript_path":"%s","hook_event_name":"Stop"}' "$TMP/bridge_tp.jsonl" | "$BR" stop)"
 expect_empty "stop: non-horos session -> bridge passes" "$(fin bz2 "$FIX/promise.jsonl" | "$BR" stop)"
 
+echo "== install: wire a target to central horos by reference; idempotent + migrating (D12) =="
+PROJ="$TMP/proj"; mkdir -p "$PROJ/.claude"
+# pre-seed: one unrelated hook + an old copy-style horos entry (prove migrate-away + preserve)
+printf '%s\n' '{ "hooks": { "PreToolUse": [' \
+  '  { "matcher": "Write", "hooks": [ { "type": "command", "command": "echo unrelated" } ] },' \
+  '  { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR/hooks/scope-guard.sh\"" } ] }' \
+  '] } }' > "$PROJ/.claude/settings.json"
+"$HOOKS/horos" install "$PROJ" >/dev/null 2>&1
+S2="$(cat "$PROJ/.claude/settings.json")"
+expect "install: scope-guard referenced"             "scope-guard.sh"  "$S2"
+expect "install: full set incl claim-guard"          "claim-guard.sh"  "$S2"
+expect "install: unrelated hook preserved"           "echo unrelated"  "$S2"
+expect_empty "install: old copy-style entry migrated away" "$(printf '%s' "$S2" | grep -F 'CLAUDE_PROJECT_DIR/hooks/scope-guard.sh' || true)"
+expect "install: .horos gitignored in target"        ".horos/"         "$(cat "$PROJ/.gitignore")"
+"$HOOKS/horos" install "$PROJ" >/dev/null 2>&1        # re-run: must stay idempotent
+expect "install: idempotent (scope-guard one line)"  "1" "$(grep -cF 'scope-guard.sh' "$PROJ/.claude/settings.json")"
+expect "doctor [target]: referenced hook resolves OK" "scope-guard" "$("$HOOKS/horos" doctor "$PROJ")"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

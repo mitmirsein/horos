@@ -57,7 +57,7 @@ hooks/
   decision-guard.sh      철학 2 (D-id 결정 · A-id 아포리아 참조무결성)
   claim-guard.sh         감사층 (떨궈진 claim 의 형식·신선도·불변식·교차참조, D9)
   parent-bridge.sh       조상 세션 위임 브리지 (D11): horos 하위 작업만 골라 horos 훅에 위임
-  horos                  CLI: scope / mode / decide / aporia / claim / log / doctor
+  horos                  CLI: scope / mode / decide / aporia / claim / install / log / doctor
 decisions.jsonl          철학 2 ledger: 결정 {id, why, cost, escape, …} · 아포리아 {id, type:"aporia", poles, why_unresolved, trigger, …} (커밋 대상)
 tests/
   run.sh                 합성 JSON × warn/block 양모드 단위검증 (격리된 CLAUDE_PROJECT_DIR)
@@ -67,19 +67,31 @@ tests/
 
 ## 설치 (다른 프로젝트에 얹기)
 
-horos 는 자족적이다 — 순수 bash + python3 stdlib, 외부 의존·절대경로 참조 없음. 대상 프로젝트 루트에 복사한다:
+horos 는 자족적이다 — 순수 bash + python3 stdlib, 외부 의존 없음. **권장: 중앙 단일 소스 + 참조(opt-in).**
+horos 한 벌만 두고, 대상 프로젝트는 *복사하지 않고* 그 중앙본을 참조한다 — 복사본은 시간이 지나면 드리프트한다(D12).
 
 ```bash
-git clone https://github.com/mitmirsein/horos /tmp/horos
-cd your-project
-cp -rp /tmp/horos/hooks .
-cp -rp /tmp/horos/.claude .          # 기존 .claude 가 있으면 settings.json 은 덮지 말고 병합
-printf '\n.horos/\n' >> .gitignore
-chmod +x hooks/*.sh hooks/horos
-hooks/horos doctor                   # 설치 점검
+# horos 레포 안에서 (이 레포가 곧 '중앙 소스')
+hooks/horos install ~/path/to/your-project    # 대상 .claude/settings.json 에 중앙 훅을 참조 등록
+hooks/horos doctor   ~/path/to/your-project    # 대상 배선 점검 (각 훅을 local|ref 로 표시)
 ```
 
-Claude Code 가 대상 프로젝트를 열면 훅이 자동 활성화된다(첫 실행 시 신뢰 승인). 강도는 기본 `warn`.
+`install` 은 대상의 `.claude/settings.json` 에 horos 훅을 **중앙 경로(`$HOME/...`)로 참조**하도록 등록하고
+(`$HOME` 상대라 머신·사용자명이 달라도 해석됨), `.horos/` 를 대상 `.gitignore` 에 추가한다 — 훅 본체는 복사하지 않는다.
+Claude Code 가 훅 실행 시 `CLAUDE_PROJECT_DIR=<대상>` 을 주입하므로 상태(`.horos/`)·결정(`decisions.jsonl`)은
+대상 프로젝트에 분리 생성된다(중앙은 로직 1벌). 멱등이라 재실행하면 옛 등록(복사 시절 포함)을 걷어내고 다시 가리킨다.
+훅은 세션 시작 시 로드되니 대상을 (다시) 열어야 적용된다. 강도는 기본 `warn`.
+
+대상에서 CLI(`decide`·`scope`·`claim`·`doctor`)를 쓰려면 중앙 CLI 를 그 프로젝트 안에서 부르면 된다 —
+CLI 는 `CLAUDE_PROJECT_DIR` 가 없으면 **CWD 의 git 루트**로 ROOT 를 잡는다(D13). 자주 쓰면 PATH 에 심링크하라:
+
+```bash
+ln -s ~/Desktop/MS_Dev.nosync/horos/hooks/horos ~/.local/bin/horos   # 선택: 전역 CLI (한 줄)
+```
+
+> 레거시(자족 복사): 중앙 소스를 둘 수 없어 한 벌을 떼어내야 하면 `cp -rp hooks .claude .` 후
+> `printf '\n.horos/\n' >> .gitignore` + `chmod +x hooks/*.sh hooks/horos`. 드리프트 추적은 사용자 책임 —
+> 가능하면 참조 방식을 쓰라.
 
 ## 부모(조상) 세션에서 강제하기
 
