@@ -40,5 +40,5 @@ PY
 if [ -z "$match" ]; then pass; fi
 
 short="$(printf '%s' "$cmd" | cut -c1-120)"
-enforce_pretool "reversibility" "$cmd" \
-  "비가역·파괴 작업 감지: ${match}. 갈아엎기 전에 dry-run / 백업 / 별도 커밋으로 가역성을 확보하거나, 의도한 작업이면 확인 후 진행하세요. (명령: ${short})"
+enforce_pretool HOROS-REV-DESTRUCT "reversibility" "$cmd" \
+  "비가역·파괴 작업 감지: ${match}. 갈아엎기 전에 dry-run/백업/별도 커밋으로 가역성을 확보하고, 의도한 작업이면 확인 후 진행하세요. Action: create a restore point first (dry-run, backup, or a separate commit), then rerun if intended. 예: git stash push -u  (명령: ${short})"

@@ -102,23 +102,29 @@ def fresh(c):                                  # all bound files still match the
 def ev(c): return set(c.get("evidence_files") or [])
 relevant = [c for c in claims if (ev(c) & changed) and fresh(c)]
 
+def relcsv(paths):                             # D15: up to 3 ROOT-relative paths for filled examples
+    out = []
+    for p in sorted(paths)[:3]:
+        out.append(p[len(ROOT) + 1:] if ROOT and p.startswith(ROOT + '/') else p)
+    return ",".join(out)
+
 errs = []
 for c in relevant:
     cid = c.get("id", "?")
-    if c.get("kind") not in KINDS: errs.append(cid + "(kind)")
+    if c.get("kind") not in KINDS: errs.append(cid + "(kind 불명/unknown-kind)")
     if not isinstance(c.get("evidence_files"), list) or not c.get("evidence_files"):
-        errs.append(cid + "(evidence_files)")
-    if not str(c.get("assert", "")).strip(): errs.append(cid + "(assert)")
+        errs.append(cid + "(evidence_files 없음/empty)")
+    if not str(c.get("assert", "")).strip(): errs.append(cid + "(assert 없음/empty)")
     ct = c.get("claims_true") or {}
     if ct.get("tests_added") and not any(TESTISH.search(x) for x in (c.get("evidence_files") or [])):
-        errs.append(cid + "(tests_added 허위: 증거에 테스트 없음)")
+        errs.append(cid + "(tests_added 허위/false: no test file in evidence)")
     if ct.get("consistent_with_refs") and not (c.get("refs") or []):
-        errs.append(cid + "(consistent_with_refs 인데 refs 없음)")
+        errs.append(cid + "(consistent_with_refs 인데 refs 없음/refs empty)")
     for d in (c.get("refs") or []):
-        if d not in ledger: errs.append(cid + ":" + d + "(미정의)")
-        elif not complete(ledger[d]): errs.append(cid + ":" + d + "(불완전)")
+        if d not in ledger: errs.append(cid + ":" + d + "(미정의/undefined)")
+        elif not complete(ledger[d]): errs.append(cid + ":" + d + "(불완전/incomplete)")
 if errs:
-    print("BROKEN\t" + ", ".join(errs)); raise SystemExit
+    print("BROKEN\t" + ", ".join(errs) + "\t" + relcsv(changed)); raise SystemExit
 
 # 4) coverage: significant change with no fresh covering claim -> warn
 covered = set()
@@ -126,7 +132,7 @@ for c in relevant:
     covered |= (ev(c) & changed)
 if changed - covered:
     significant = len(changed) >= 2 or new_lines >= 8
-    print("MISSING" if significant else "PASS"); raise SystemExit
+    print(("MISSING\t" + relcsv(changed - covered)) if significant else "PASS"); raise SystemExit
 print("PASS")
 PY
 verdict="$(cat "$vfile")"
@@ -134,13 +140,15 @@ verdict="$(cat "$vfile")"
 case "${verdict%%	*}" in
   BROKEN)
     detail="$(printf '%s' "$verdict" | cut -f2)"
+    fcsv="$(printf '%s' "$verdict" | cut -f3)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
     printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
-    enforce_stop "claim/structural" "$detail" \
-      "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. 'horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]' 로 떨굽니다. (이 게이트는 claim 의 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
+    enforce_stop HOROS-CLM-BROKEN "claim/structural" "$detail" \
+      "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. Action: fix the claim (or externalize the missing ref first) and redeposit. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (이 게이트는 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
   MISSING)
+    fcsv="$(printf '%s' "$verdict" | cut -f2)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
     printf '%s 0\n' "$sid" > "$GUARD"
-    log_violation "claim/uncovered" "significant code change, no fresh covering claim"
-    warn_emit "유의미한 코드 변경에 이를 덮는 claim 이 없습니다. 'horos claim completion <한 일> <files,csv> [refs] [tests_added,…]' 로 변경에 대한 검증 가능한 주장을 떨구세요 (감사층, warn)." ;;
+    log_violation "claim/uncovered" "significant code change, no fresh covering claim" HOROS-CLM-MISSING
+    warn_emit "HOROS-CLM-MISSING 유의미한 코드 변경에 이를 덮는 claim 이 없습니다. Action: deposit a verifiable claim covering the changed files. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (감사층, warn)" ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"; pass ;;
 esac

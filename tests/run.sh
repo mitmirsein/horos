@@ -138,6 +138,30 @@ printf 'def g(): return 999\n' > "$TMP/good.py"   # mutate bound file -> claim g
 mode block; cgd
 expect_empty "stale claim dropped (re-edit not false-blocked) -> pass" "$(fin sc6 "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh")"
 
+echo "== D15: message contract — [horos:*] <CODE> <ko>. Action: <en>. 예: <filled command> =="
+mode warn
+expect "scope OUT: code present" "HOROS-SCOPE-OUT" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
+expect "scope OUT: filled /scope widening example" "/scope hooks/** README.md secret.txt" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
+expect "reversibility: code present" "HOROS-REV-DESTRUCT" "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}')"
+mode warn; reset_guard
+expect "finish PROMISE: code present" "HOROS-FIN-PROMISE" "$(fin sm1 "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+mode warn; reset_guard
+expect "finish CLAIM: code present" "HOROS-FIN-NOEVIDENCE" "$(fin sm2 "$FIX/claim.jsonl" | "$HOOKS/finish-the-work.sh")"
+mode warn; rgd
+out_broken="$(fin sm3 "$FIX/edit_code_brokenref.jsonl" | "$HOOKS/decision-guard.sh")"
+expect "decision BROKEN: code + English twin" "(미정의/undefined)" "$out_broken"
+expect "decision BROKEN: example filled with the broken id" "horos decide D9" "$out_broken"
+mode warn; rgd
+expect "decision MISSING: example uses next free id" "horos decide D2" "$(fin sm4 "$FIX/edit_code_bigchange.jsonl" | "$HOOKS/decision-guard.sh")"
+mode warn; cgd
+out_lie="$(fin sm5 "$FIX/edit_code_claim_testlie.jsonl" | "$HOOKS/claim-guard.sh")"
+expect "claim BROKEN: code + English twin" "false: no test file" "$out_lie"
+expect "claim BROKEN: code present" "HOROS-CLM-BROKEN" "$out_lie"
+mode warn; cgd
+out_uncov="$(fin sm6 "$FIX/edit_code_claim_uncovered.jsonl" | "$HOOKS/claim-guard.sh")"
+expect "claim MISSING: example filled with changed files" "cov1.py,cov2.py" "$out_uncov"
+expect "violations.log: 5th column carries the code" "HOROS-CLM-MISSING" "$(tail -n1 "$TMP/.horos/violations.log")"
+
 echo "== D14: CLI deposit-time validation (loud errors instead of silent dead records) =="
 CLIP="$TMP/cliproj"; mkdir -p "$CLIP"
 printf 'x=1\n' > "$CLIP/a.py"

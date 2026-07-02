@@ -6,6 +6,21 @@
 #  - warn mode  : never blocks; notifies the human via systemMessage + logs. (observation stage)
 #  - block mode : actually denies (PreToolUse) / continues the turn (Stop) + logs.
 #  - JSON is parsed/emitted with python3 stdlib only (portable, no platform-specific deps).
+#
+# Code registry (D15) — every verdict/telemetry line carries ONE stable mnemonic code so any
+# model (or grep) can act on it without parsing Korean prose. Message contract for verdicts:
+#   [horos:block|warn] <CODE> <한국어 문장>. Action: <one English imperative>. 예: <one filled command>
+# (FIN codes may omit the 예-example: their action is "use tools now", not a specific command.)
+#   Verdicts   HOROS-SCOPE-OUT       edit outside declared scope        (scope-guard)
+#              HOROS-REV-DESTRUCT    destructive/irreversible command   (reversibility-guard)
+#              HOROS-FIN-PROMISE     turn ended on a promise, no tools  (finish-the-work)
+#              HOROS-FIN-NOEVIDENCE  completion claimed, zero tool use  (finish-the-work)
+#              HOROS-DEC-BROKEN      commented [DA]-ref missing/incomplete in ledger (decision-guard)
+#              HOROS-DEC-MISSING     significant change, no [DA]-ref    (decision-guard, warn-tier)
+#              HOROS-CLM-BROKEN      deposited claim fails structure    (claim-guard)
+#              HOROS-CLM-MISSING     significant change, no fresh claim (claim-guard, warn-tier)
+#   CLI        HOROS-CLI-BADID DUPID BADKIND BADFLAG BADREF NOREF NOFILE ROOT   (hooks/horos, D14)
+#   Telemetry  HOROS-TEL-MALFORMED STALE-DROP LOOPGUARD PYFAIL                  (silent-pass tracing, D16)
 
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
   HOROS_ROOT="$CLAUDE_PROJECT_DIR"
@@ -48,8 +63,8 @@ horos_mode() {
   [ -n "$m" ] && printf '%s' "$m" || printf 'warn'
 }
 
-log_violation() { # rule detail
-  printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${hook_event:-?}" "$1" "$2" \
+log_violation() { # rule detail [code]  — code is the 5th tab column (append-only, D15)
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${hook_event:-?}" "$1" "$2" "${3:-}" \
     >> "$HOROS_STATE/violations.log" 2>/dev/null || true
 }
 
@@ -57,7 +72,7 @@ log_violation() { # rule detail
 warn_emit() { # message
   HOROS_MSG="$1" python3 - <<'PY'
 import json, os
-print(json.dumps({"systemMessage": "[horos:warn] " + os.environ["HOROS_MSG"]}))
+print(json.dumps({"systemMessage": "[horos:warn] " + os.environ["HOROS_MSG"]}, ensure_ascii=False))
 PY
 }
 
@@ -68,7 +83,7 @@ import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "[horos:block] " + os.environ["HOROS_MSG"]}}))
+    "permissionDecisionReason": "[horos:block] " + os.environ["HOROS_MSG"]}}, ensure_ascii=False))
 PY
 }
 
@@ -76,7 +91,7 @@ PY
 block_stop() { # reason
   HOROS_MSG="$1" python3 - <<'PY'
 import json, os
-print(json.dumps({"decision": "block", "reason": "[horos:block] " + os.environ["HOROS_MSG"]}))
+print(json.dumps({"decision": "block", "reason": "[horos:block] " + os.environ["HOROS_MSG"]}, ensure_ascii=False))
 PY
 }
 
@@ -86,22 +101,22 @@ inject_context() { # event text
 import json, os
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": os.environ["HOROS_EV"],
-    "additionalContext": os.environ["HOROS_MSG"]}}))
+    "additionalContext": os.environ["HOROS_MSG"]}}, ensure_ascii=False))
 PY
 }
 
 pass() { exit 0; }
 
-# enforce_pretool rule detail reason : act per mode, then exit 0
+# enforce_pretool code rule detail reason : act per mode, then exit 0 (D15: leading code arg)
 enforce_pretool() {
-  log_violation "$1" "$2"
-  if [ "$(horos_mode)" = block ]; then deny_pretool "$3"; else warn_emit "$3"; fi
+  log_violation "$2" "$3" "$1"
+  if [ "$(horos_mode)" = block ]; then deny_pretool "$1 $4"; else warn_emit "$1 $4"; fi
   exit 0
 }
 
-# enforce_stop rule detail reason : act per mode, then exit 0
+# enforce_stop code rule detail reason : act per mode, then exit 0 (D15: leading code arg)
 enforce_stop() {
-  log_violation "$1" "$2"
-  if [ "$(horos_mode)" = block ]; then block_stop "$3"; else warn_emit "$3"; fi
+  log_violation "$2" "$3" "$1"
+  if [ "$(horos_mode)" = block ]; then block_stop "$1 $4"; else warn_emit "$1 $4"; fi
   exit 0
 }

@@ -25,7 +25,10 @@ if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
 [[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
 if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 
-verdict="$(HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_ROOT="$HOROS_ROOT" python3 - <<'PY'
+# NOTE: python output goes to a tempfile, not $(...<<'PY'...) — bash's $() + here-doc scanner
+# can prematurely close on parenthesis-heavy bodies (same pattern as claim-guard). # D15
+vfile="$(mktemp)"; trap 'rm -f "$vfile"' EXIT
+HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_ROOT="$HOROS_ROOT" python3 - > "$vfile" <<'PY'
 import json, os, re
 CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".c",".cpp",".cc",".h",".hpp",".php",".swift",".kt",".scala",
@@ -76,34 +79,49 @@ try:
             if r.get("id"): ledger[r["id"]] = r
 except FileNotFoundError:
     pass
+def next_free(prefix):                         # D15: for filled command examples in messages
+    n = 0
+    for i in ledger:
+        m = re.match("^" + prefix + r"([1-9][0-9]*)$", str(i))
+        if m: n = max(n, int(m.group(1)))
+    return "%s%d" % (prefix, n + 1)
 def complete(r):                               # D8: completeness depends on record kind
     if r.get("type") == "aporia":
         return bool(r.get("poles")) and all(str(r.get(k, "")).strip()
                                              for k in ("why_unresolved", "trigger"))
     return all(str(r.get(k, "")).strip() for k in ("why", "cost", "escape"))
-broken = []
+broken = []; broken_ids = []
 for d in sorted(refs):
-    if d not in ledger: broken.append(d + "(미정의)")
-    elif not complete(ledger[d]): broken.append(d + "(불완전)")
+    if d not in ledger:
+        broken.append(d + "(미정의/undefined)"); broken_ids.append(d)
+    elif not complete(ledger[d]):
+        broken.append(d + "(불완전/incomplete)"); broken_ids.append(d)
 if broken:
-    print("BROKEN\t" + ", ".join(broken)); raise SystemExit
+    # fields: detail, first broken bare id, next free D-id (both for filled examples, D15)
+    print("BROKEN\t" + ", ".join(broken) + "\t" + broken_ids[0] + "\t" + next_free("D")); raise SystemExit
 if not refs:
     significant = len(changed_files) >= 2 or new_lines >= 8
-    print("MISSING" if significant else "PASS"); raise SystemExit
+    print(("MISSING\t" + next_free("D")) if significant else "PASS"); raise SystemExit
 print("PASS")
 PY
-)"
+verdict="$(cat "$vfile")"
 
 case "${verdict%%	*}" in
   BROKEN)
     detail="$(printf '%s' "$verdict" | cut -f2)"
+    bid="$(printf '%s' "$verdict" | cut -f3)"
+    case "$bid" in                             # D15: fill the fix command for the actual broken id
+      A*) fix="horos aporia $bid \"<극1>|<극2>\" \"<why_unresolved>\" \"<trigger>\"" ;;
+      *)  fix="horos decide $bid \"<why>\" \"<cost>\" \"<escape>\"" ;;
+    esac
     printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
-    enforce_stop "decision/broken-ref" "$detail" \
-      "코드 주석이 결정/아포리아 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. 결정은 'horos decide D<n> <why> <cost> <escape>', 아포리아는 'horos aporia A<n> \"<극1>|<극2>\" <why_unresolved> <trigger>' 로 외화하세요." ;;
+    enforce_stop HOROS-DEC-BROKEN "decision/broken-ref" "$detail" \
+      "코드 주석이 결정/아포리아 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. Action: externalize the referenced id into the ledger now, then end the turn. 예: ${fix}" ;;
   MISSING)
+    nfd="$(printf '%s' "$verdict" | cut -f2)"; [ -n "$nfd" ] || nfd="D<n>"
     printf '%s 0\n' "$sid" > "$GUARD"
-    log_violation "decision/not-externalized" "significant code change, no D-id reference"
-    warn_emit "이번 세션에 유의미한 코드 변경이 있었지만 결정(D-id)을 외화한 흔적이 없습니다. 중요한 선택이라면 'horos decide D<n> <why> <cost> <escape>' 로 기록하고 코드 주석에 # D<n> 으로 참조하세요." ;;
+    log_violation "decision/not-externalized" "significant code change, no D-id reference" HOROS-DEC-MISSING
+    warn_emit "HOROS-DEC-MISSING 이번 세션에 유의미한 코드 변경이 있었지만 결정(D-id)을 외화한 흔적이 없습니다. 중요한 선택이었다면 기록하고 코드 주석으로 참조하세요. Action: record the key decision, then reference it from a code comment. 예: horos decide ${nfd} \"<why>\" \"<cost>\" \"<escape>\"  후 코드에  # ${nfd}" ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"; pass ;;
 esac

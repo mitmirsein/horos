@@ -71,12 +71,12 @@ PY
 case "$verdict" in
   PROMISE)
     printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
-    enforce_stop "finish/promise" "promise-without-action" \
-      "직전 응답이 작업을 '하겠다'고 말만 하고 도구 호출 없이 끝났습니다. 지금 도구로 그 작업을 실제로 수행하세요." ;;
+    enforce_stop HOROS-FIN-PROMISE "finish/promise" "promise-without-action" \
+      "직전 응답이 작업을 '하겠다'고 말만 하고 도구 호출 없이 끝났습니다. Action: perform the promised work NOW with tool calls, then end the turn. (약속한 그 작업을 지금 도구로 실행하세요.)" ;;
   CLAIM)
     printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
-    enforce_stop "finish/claim" "completion-without-evidence" \
-      "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. 완료 정의(동작+테스트+검증)를 증거와 함께 충족했는지 확인하세요." ;;
+    enforce_stop HOROS-FIN-NOEVIDENCE "finish/claim" "completion-without-evidence" \
+      "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. Action: run the verification with tools and report its output before claiming done. 예: bash tests/run.sh" ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"
     pass ;;

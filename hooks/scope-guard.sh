@@ -39,12 +39,14 @@ def match(rel, pat):
     base = pat.rstrip('*').rstrip('/')      # treat "dir/" or "dir/**" as a prefix
     return bool(base) and (rel == base or rel.startswith(base + '/'))
 ok = any(match(rel, p) for p in allow)
-print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow))
+# 4th field = space-joined allow, so bash can build a filled /scope widening example (D15)
+print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + " ".join(allow))
 PY
 )"
 
 if [ "${verdict%%	*}" = OK ]; then pass; fi
 rel="$(printf '%s' "$verdict" | cut -f2)"
 allow="$(printf '%s' "$verdict" | cut -f3)"
-enforce_pretool "scope" "$rel" \
-  "범위 밖 수정: '$rel' 은 선언된 scope에 없음 (allow: $allow). 의도한 확장이면 /scope 로 경계를 넓히고, 아니면 범위 안에서 작업하세요."
+allow_sp="$(printf '%s' "$verdict" | cut -f4)"
+enforce_pretool HOROS-SCOPE-OUT "scope" "$rel" \
+  "범위 밖 수정: '$rel' 은 선언된 scope에 없음 (allow: $allow). 의도한 확장이면 경계를 넓힌 뒤 재시도하고, 아니면 범위 안에서 작업하세요. Action: edit only inside the declared scope, or widen it first and retry. 예: /scope $allow_sp $rel"
