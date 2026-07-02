@@ -370,6 +370,18 @@ for h in ("scope-guard", "reversibility-guard", "finish-the-work", "decision-gua
         else:
             print("  [MISS] %-20s" % h)
 PY
+    # D16: surface what the gates saw — counts by code (5th col; pre-D15 lines bucket by rule),
+    # plus how often something was silently let through (HOROS-TEL-*).
+    echo "health:"
+    if [ -f "$DS/violations.log" ]; then
+      awk -F'\t' '{ c = ($5 != "") ? $5 : "(uncoded/" $3 ")"; n[c]++ } END { for (k in n) printf "  %5d  %s\n", n[k], k }' \
+        "$DS/violations.log" 2>/dev/null | sort -rn
+      tel="$(grep -c 'HOROS-TEL-' "$DS/violations.log" 2>/dev/null || true)"
+      if [ "${tel:-0}" -gt 0 ] 2>/dev/null; then echo "  silent-pass traces: $tel (HOROS-TEL-*)"; fi
+      echo "  total: $(wc -l < "$DS/violations.log" | tr -d ' ') line(s)"
+    else
+      echo "  (no violations logged)"
+    fi
     ;;
   help|*)
     cat <<'EOF'

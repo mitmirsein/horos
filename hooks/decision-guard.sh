@@ -28,7 +28,8 @@ if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 # NOTE: python output goes to a tempfile, not $(...<<'PY'...) — bash's $() + here-doc scanner
 # can prematurely close on parenthesis-heavy bodies (same pattern as claim-guard). # D15
 vfile="$(mktemp)"; trap 'rm -f "$vfile"' EXIT
-HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_ROOT="$HOROS_ROOT" python3 - > "$vfile" <<'PY'
+# D16: a judge crash must not kill the Stop silently-with-stderr — trace PYFAIL, then pass.
+HOROS_TP="$tp" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_ROOT="$HOROS_ROOT" python3 - > "$vfile" 2>/dev/null <<'PY' || { log_event HOROS-TEL-PYFAIL decision-guard; printf '%s 0\n' "$sid" > "$GUARD"; pass; }
 import json, os, re
 CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".c",".cpp",".cc",".h",".hpp",".php",".swift",".kt",".scala",
@@ -71,11 +72,12 @@ if not changed_files:
 ledger = {}
 try:
     with open(os.environ["HOROS_LEDGER"]) as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             line = line.strip()
             if not line: continue
             try: r = json.loads(line)
-            except Exception: continue
+            except Exception:                  # D16: dropped ledger lines leave a trace
+                print("TEL\tHOROS-TEL-MALFORMED\tledger:%d" % lineno); continue
             if r.get("id"): ledger[r["id"]] = r
 except FileNotFoundError:
     pass
@@ -104,7 +106,7 @@ if not refs:
     print(("MISSING\t" + next_free("D")) if significant else "PASS"); raise SystemExit
 print("PASS")
 PY
-verdict="$(cat "$vfile")"
+verdict="$(drain_tel "$vfile")"
 
 case "${verdict%%	*}" in
   BROKEN)
@@ -114,7 +116,8 @@ case "${verdict%%	*}" in
       A*) fix="horos aporia $bid \"<극1>|<극2>\" \"<why_unresolved>\" \"<trigger>\"" ;;
       *)  fix="horos decide $bid \"<why>\" \"<cost>\" \"<escape>\"" ;;
     esac
-    printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
+    n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
+    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "decision:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-DEC-BROKEN "decision/broken-ref" "$detail" \
       "코드 주석이 결정/아포리아 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. Action: externalize the referenced id into the ledger now, then end the turn. 예: ${fix}" ;;
   MISSING)

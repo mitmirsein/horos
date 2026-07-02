@@ -28,7 +28,8 @@ if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 # NOTE: the python is redirected to a tempfile rather than captured via $(...<<'PY'...).
 # bash's $() + here-doc scanner can prematurely close on parenthesis-heavy bodies; this avoids it.
 vfile="$(mktemp)"; trap 'rm -f "$vfile"' EXIT
-HOROS_TP="$tp" HROOT="$HOROS_ROOT" HOROS_CLAIMS="$HOROS_STATE/claims.jsonl" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" python3 - > "$vfile" <<'PY'
+# D16: a judge crash must not kill the Stop silently-with-stderr — trace PYFAIL, then pass.
+HOROS_TP="$tp" HROOT="$HOROS_ROOT" HOROS_CLAIMS="$HOROS_STATE/claims.jsonl" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" python3 - > "$vfile" 2>/dev/null <<'PY' || { log_event HOROS-TEL-PYFAIL claim-guard; printf '%s 0\n' "$sid" > "$GUARD"; pass; }
 import json, os, re, hashlib
 CODE_EXT = (".py",".js",".ts",".tsx",".jsx",".sh",".go",".rs",".java",".rb",
             ".c",".cpp",".cc",".h",".hpp",".php",".swift",".kt",".scala",
@@ -67,20 +68,21 @@ if not changed:
     print("PASS"); raise SystemExit
 
 # 2) load claims (runtime, machine-local) and the decision ledger (for cross-ref)
-def load(path):
+def load(path, label):
     out = []
     try:
         with open(path) as f:
-            for line in f:
+            for lineno, line in enumerate(f, 1):
                 line = line.strip()
                 if not line: continue
                 try: out.append(json.loads(line))
-                except Exception: continue
+                except Exception:              # D16: dropped lines leave a trace
+                    print("TEL\tHOROS-TEL-MALFORMED\t%s:%d" % (label, lineno))
     except FileNotFoundError:
         pass
     return out
-claims = load(os.environ["HOROS_CLAIMS"])
-ledger = {r["id"]: r for r in load(os.environ["HOROS_LEDGER"]) if r.get("id")}
+claims = load(os.environ["HOROS_CLAIMS"], "claims")
+ledger = {r["id"]: r for r in load(os.environ["HOROS_LEDGER"], "ledger") if r.get("id")}
 
 def complete(r):                               # D8: kind-aware completeness (shared with decision-guard)
     if r.get("type") == "aporia":
@@ -100,7 +102,12 @@ def fresh(c):                                  # all bound files still match the
 
 # 3) only FRESH claims touching this session's changes are judged (stale -> dropped, D9)
 def ev(c): return set(c.get("evidence_files") or [])
-relevant = [c for c in claims if (ev(c) & changed) and fresh(c)]
+relevant = []
+for c in claims:
+    if not (ev(c) & changed): continue
+    if fresh(c): relevant.append(c)
+    else:                                      # D16: a demoted claim leaves a trace
+        print("TEL\tHOROS-TEL-STALE-DROP\t" + str(c.get("id", "?")))
 
 def relcsv(paths):                             # D15: up to 3 ROOT-relative paths for filled examples
     out = []
@@ -135,13 +142,14 @@ if changed - covered:
     print(("MISSING\t" + relcsv(changed - covered)) if significant else "PASS"); raise SystemExit
 print("PASS")
 PY
-verdict="$(cat "$vfile")"
+verdict="$(drain_tel "$vfile")"
 
 case "${verdict%%	*}" in
   BROKEN)
     detail="$(printf '%s' "$verdict" | cut -f2)"
     fcsv="$(printf '%s' "$verdict" | cut -f3)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
-    printf '%s %s\n' "$sid" "$(( prev_n + 1 ))" > "$GUARD"
+    n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
+    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-CLM-BROKEN "claim/structural" "$detail" \
       "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. Action: fix the claim (or externalize the missing ref first) and redeposit. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (이 게이트는 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
   MISSING)

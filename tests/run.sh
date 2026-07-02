@@ -180,6 +180,30 @@ expect "claim: bind file missing -> NOFILE" "HOROS-CLI-NOFILE" "$(clip claim com
 NOGIT="$TMP/nogit"; mkdir -p "$NOGIT"
 expect "write cmd, non-git CWD, no env -> ROOT notice" "HOROS-CLI-ROOT" "$(cd "$NOGIT" && env -u CLAUDE_PROJECT_DIR "$HOOKS/horos" decide D1 w c e 2>&1)"
 
+echo "== D16: silent-pass telemetry (every fail-open leaves a trace) =="
+VLOG="$TMP/.horos/violations.log"
+printf 'not-json\n' >> "$TMP/decisions.jsonl"
+mode warn; rgd
+fin d16a "$FIX/edit_code_bigchange.jsonl" | "$HOOKS/decision-guard.sh" >/dev/null
+expect "malformed ledger line -> TEL trace" "ledger:4" "$(tail -n 5 "$VLOG")"
+printf 'not-json-claims\n' >> "$TMP/.horos/claims.jsonl"
+mode warn; cgd
+fin d16b "$FIX/edit_code_claim_uncovered.jsonl" | "$HOOKS/claim-guard.sh" >/dev/null
+expect "malformed claims line -> TEL trace" "claims:4" "$(tail -n 5 "$VLOG")"
+mode warn; cgd
+fin d16c "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh" >/dev/null
+expect "stale claim demotion -> TEL trace" "HOROS-TEL-STALE-DROP" "$(tail -n 5 "$VLOG")"
+mode warn; reset_guard
+fin d16lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+fin d16lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+fin d16lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+expect "loop-guard silence -> TEL exactly once" "1" "$(grep -cF 'finish:d16lp' "$VLOG" || true)"
+PYP="$TMP/pyfail"; mkdir -p "$PYP/.horos" "$PYP/decisions.jsonl"   # ledger-as-directory => judge crash
+expect_empty "judge crash -> silent pass (fail-open)" "$(printf '{"session_id":"pf1","transcript_path":"%s","hook_event_name":"Stop"}' "$FIX/edit_code_bigchange.jsonl" | CLAUDE_PROJECT_DIR="$PYP" "$HOOKS/decision-guard.sh")"
+expect "judge crash -> PYFAIL trace" "HOROS-TEL-PYFAIL" "$(tail -n 2 "$PYP/.horos/violations.log")"
+expect "doctor: health section present" "health:" "$("$HOOKS/horos" doctor "$TMP")"
+expect "doctor: silent-pass traces surfaced" "silent-pass traces:" "$("$HOOKS/horos" doctor "$TMP")"
+
 echo "== M2: dual-violation -> both Stop hooks block independently (no allow/deny conflict) =="
 mode block; reset_guard; rgd
 expect "finish-the-work blocks on dual-violation" '"decision": "block"' "$(fin m2a "$FIX/dual_violation.jsonl" | "$HOOKS/finish-the-work.sh")"

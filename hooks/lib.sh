@@ -68,6 +68,26 @@ log_violation() { # rule detail [code]  — code is the 5th tab column (append-o
     >> "$HOROS_STATE/violations.log" 2>/dev/null || true
 }
 
+# log_event code detail : telemetry trace (D16) — fail-open stays, but every silent pass
+# (malformed drop, stale-drop, loop-guard silence, python failure) must leave a line here,
+# so `horos doctor` can surface what the gates quietly let through.
+log_event() { log_violation "telemetry" "$2" "$1"; }
+
+# drain_tel <verdict-file> : tempfile verdict protocol (D16). The judge python may print
+# zero or more "TEL\t<code>\t<detail>" lines BEFORE its final verdict line; log each TEL,
+# echo only the verdict (the last non-TEL line). Malformed TEL lines degrade to verdicts,
+# which the callers' case-statements ignore safely (fail-open).
+drain_tel() {
+  local line last=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      TEL*) log_event "$(printf '%s' "$line" | cut -f2)" "$(printf '%s' "$line" | cut -f3)" ;;
+      *)    last="$line" ;;
+    esac
+  done < "$1"
+  printf '%s' "$last"
+}
+
 # warn: human-facing notice only, action proceeds
 warn_emit() { # message
   HOROS_MSG="$1" python3 - <<'PY'
