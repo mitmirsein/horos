@@ -204,6 +204,17 @@ expect "judge crash -> PYFAIL trace" "HOROS-TEL-PYFAIL" "$(tail -n 2 "$PYP/.horo
 expect "doctor: health section present" "health:" "$("$HOOKS/horos" doctor "$TMP")"
 expect "doctor: silent-pass traces surfaced" "silent-pass traces:" "$("$HOOKS/horos" doctor "$TMP")"
 
+echo "== D17: session-brief — protocol self-injection at SessionStart =="
+brief="$(printf '{"hook_event_name":"SessionStart"}' | "$HOOKS/session-brief.sh")"
+expect "brief: card emitted with version" "[horos v" "$brief"
+expect "brief: current mode shown" "mode=warn" "$brief"
+expect "brief: decide template uses next free id" "horos decide D2" "$brief"
+expect "brief: aporia template uses next free id" "horos aporia A3" "$brief"
+expect "brief: declared scope shown" "hooks/**" "$brief"
+expect "brief: cli.path points at central CLI" "$HOOKS/horos" "$(cat "$TMP/.horos/cli.path")"
+PNEW="$TMP/newproj"; mkdir -p "$PNEW"
+expect "brief: empty project starts at D1" "horos decide D1" "$(printf '{}' | CLAUDE_PROJECT_DIR="$PNEW" "$HOOKS/session-brief.sh")"
+
 echo "== M2: dual-violation -> both Stop hooks block independently (no allow/deny conflict) =="
 mode block; reset_guard; rgd
 expect "finish-the-work blocks on dual-violation" '"decision": "block"' "$(fin m2a "$FIX/dual_violation.jsonl" | "$HOOKS/finish-the-work.sh")"
@@ -242,6 +253,7 @@ printf '%s\n' '{ "hooks": { "PreToolUse": [' \
 S2="$(cat "$PROJ/.claude/settings.json")"
 expect "install: scope-guard referenced"             "scope-guard.sh"  "$S2"
 expect "install: full set incl claim-guard"          "claim-guard.sh"  "$S2"
+expect "install: session brief registered (D17)"     "session-brief.sh" "$S2"
 expect "install: unrelated hook preserved"           "echo unrelated"  "$S2"
 expect_empty "install: old copy-style entry migrated away" "$(printf '%s' "$S2" | grep -F 'CLAUDE_PROJECT_DIR/hooks/scope-guard.sh' || true)"
 expect "install: .horos gitignored in target"        ".horos/"         "$(cat "$PROJ/.gitignore")"

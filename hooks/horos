@@ -286,8 +286,13 @@ stop = [
         {"type": "command", "command": hookcmd("claim-guard.sh"), "timeout": 20},
     ]},
 ]
+sess = [                                 # D17: protocol self-injection at session start
+    {"matcher": "startup|resume|clear|compact", "hooks": [
+        {"type": "command", "command": hookcmd("session-brief.sh"), "timeout": 10},
+    ]},
+]
 BASENAMES = ("scope-guard.sh", "reversibility-guard.sh", "finish-the-work.sh",
-             "decision-guard.sh", "claim-guard.sh", "parent-bridge.sh")
+             "decision-guard.sh", "claim-guard.sh", "parent-bridge.sh", "session-brief.sh")
 def is_horos(entry):
     return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
 cfgdir = os.path.join(target, ".claude"); os.makedirs(cfgdir, exist_ok=True)
@@ -299,11 +304,12 @@ if os.path.exists(cfgpath):
     except Exception as e:
         raise SystemExit("error: target .claude/settings.json is not valid JSON: %s" % e)
 hooks = cfg.setdefault("hooks", {})
-for ev in ("PreToolUse", "Stop"):        # strip prior horos entries (idempotent + migrate old copy form)
+for ev in ("PreToolUse", "Stop", "SessionStart"):  # strip prior horos entries (idempotent + migrate old copy form)
     if ev in hooks:
         hooks[ev] = [e for e in hooks[ev] if not is_horos(e)]
 hooks.setdefault("PreToolUse", []).extend(pre)
 hooks.setdefault("Stop", []).extend(stop)
+hooks.setdefault("SessionStart", []).extend(sess)
 with open(cfgpath, "w") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
 gi = os.path.join(target, ".gitignore")  # .horos/ is runtime state, machine-local
@@ -314,6 +320,7 @@ if ".horos/" not in lines:
 print("installed horos (by reference) -> %s" % target)
 print("  central source : %s/hooks" % (("$HOME/" + rel) if portable else src))
 print("  enforcement    : scope-guard, reversibility-guard (PreToolUse) + finish/decision/claim (Stop)")
+print("  protocol       : session-brief (SessionStart) — injects the conventions card each session")
 if not portable:
     print("  WARNING: central horos is not under $HOME — wrote an absolute path that may not resolve")
     print("           on another machine. Move horos under $HOME for multimachine portability.")
