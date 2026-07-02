@@ -4,8 +4,15 @@ set -euo pipefail
 # ROOT resolution (D13): hooks always receive CLAUDE_PROJECT_DIR from Claude Code, but the CLI is
 # often invoked from a *consuming* project (central single-source model, D12) where it is unset —
 # fall back to the CWD's git root (not this script's dir) so decide/scope/claim land in the project
-# you are in, not in central horos.
-ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+# you are in, not in central horos. ROOT_SRC records HOW it resolved (env|git|pwd) so write
+# commands can warn loudly on the weakest fallback instead of recording into the wrong ledger. # D14
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+  ROOT="$CLAUDE_PROJECT_DIR"; ROOT_SRC=env
+elif ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$ROOT" ]; then
+  ROOT_SRC=git
+else
+  ROOT="$(pwd)"; ROOT_SRC=pwd
+fi
 # CENTRAL = where this script lives (the one central horos), distinct from ROOT (the project
 # being operated on). Version/doctor must report the central copy, not the consumer.
 CENTRAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd || printf '%s' "$ROOT")"
@@ -14,6 +21,14 @@ S="$ROOT/.horos"; mkdir -p "$S"
 # read mode robustly (absent file -> warn; bare `< file` would leak a shell error). (D7)
 read_mode() { local m=""; [ -f "$S/mode" ] && m="$(tr -d '[:space:]' < "$S/mode" 2>/dev/null)"; [ -n "$m" ] && printf '%s' "$m" || printf 'warn'; }
 
+# D14: write commands call this first — a pwd-fallback ROOT is the classic wrong-ledger trap
+# (invoked from a non-git CWD in some other project). Notice, don't block (fail-open for CLI).
+warn_root() {
+  if [ "$ROOT_SRC" = pwd ]; then
+    echo "notice: HOROS-CLI-ROOT root=$ROOT (CLAUDE_PROJECT_DIR unset, CWD is not a git repo). If this is the wrong project, cd to the project root or export CLAUDE_PROJECT_DIR, then rerun." >&2
+  fi
+}
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   scope)
@@ -21,6 +36,7 @@ case "$cmd" in
     case "$sub" in
       set)
         [ "$#" -ge 1 ] || { echo "usage: horos scope set <glob>..." >&2; exit 1; }
+        warn_root
         HOROS_S="$S" python3 - "$@" <<'PY'
 import json, os, sys, datetime
 allow = sys.argv[1:]
@@ -28,7 +44,7 @@ path = os.path.join(os.environ["HOROS_S"], "scope.json")
 json.dump({"allow": allow, "declared_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
           open(path, "w"), ensure_ascii=False, indent=2)
 PY
-        echo "scope set: $*" ;;
+        echo "scope set: $* -> $S/scope.json" ;;
       show)  cat "$S/scope.json" 2>/dev/null || echo "(no scope declared)" ;;
       clear) rm -f "$S/scope.json"; echo "scope cleared" ;;
       *) echo "usage: horos scope set|show|clear" >&2; exit 1 ;;
@@ -36,7 +52,7 @@ PY
   mode)
     sub="${1:-show}"
     case "$sub" in
-      warn|block) printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub" ;;
+      warn|block) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;
       show|"")    echo "$(read_mode)" ;;
       *) echo "usage: horos mode warn|block|show" >&2; exit 1 ;;
     esac ;;
@@ -44,15 +60,51 @@ PY
     id="${1:-}"; why="${2:-}"; cost="${3:-}"; esc="${4:-}"; files="${5:-}"
     if [ -z "$id" ] || [ -z "$why" ] || [ -z "$cost" ] || [ -z "$esc" ]; then
       echo "usage: horos decide D<n> <why> <cost> <escape> [files,csv]" >&2; exit 1; fi
-    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HWHY="$why" HCOST="$cost" HESC="$esc" HFILES="$files" python3 - <<'PY'
-import json, os, datetime
-rec = {"id": os.environ["HID"], "why": os.environ["HWHY"], "cost": os.environ["HCOST"],
+    warn_root
+    # D14: deposit-time validation. A malformed id ('foo') appended silently and became a dead
+    # record no [DA]-comment could reference; a duplicate id silently shadowed the original
+    # (judges read the ledger last-wins). Fail LOUD at deposit, with a copy-pasteable fix.
+    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HWHY="$why" HCOST="$cost" HESC="$esc" HFILES="$files" HROOT="$ROOT" python3 - <<'PY'
+import json, os, re, sys, shlex, datetime
+led = os.environ["HOROS_LEDGER"]; rid = os.environ["HID"]
+ids = set()
+try:
+    with open(led) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get("id"): ids.add(str(r["id"]))
+except FileNotFoundError:
+    pass
+def next_free(prefix):
+    n = 0
+    for i in ids:
+        m = re.match("^" + prefix + r"([1-9][0-9]*)$", i)
+        if m: n = max(n, int(m.group(1)))
+    return "%s%d" % (prefix, n + 1)
+example = "horos decide %s %s %s %s" % (next_free("D"), shlex.quote(os.environ["HWHY"]),
+                                        shlex.quote(os.environ["HCOST"]), shlex.quote(os.environ["HESC"]))
+if not re.match(r"^D[1-9][0-9]*$", rid):
+    raise SystemExit("error: HOROS-CLI-BADID '%s' 는 D<n> 형식이 아닙니다 (not of the form D<n>; nothing was recorded). "
+                     "Action: rerun with the suggested free id. 예: %s" % (rid, example))
+if rid in ids:
+    raise SystemExit("error: HOROS-CLI-DUPID %s 는 ledger에 이미 존재합니다 (already exists — appending again would silently shadow the original). "
+                     "다음 빈 ID (next free): %s. Action: rerun with the suggested free id. 예: %s"
+                     % (rid, next_free("D"), example))
+missing = [x for x in os.environ.get("HFILES", "").split(",")
+           if x and not os.path.exists(os.path.join(os.environ["HROOT"], x))]
+if missing:  # informational field: warn, still record
+    print("warning: HOROS-CLI-NOFILE files not on disk (informational field, recorded anyway): "
+          + ", ".join(missing), file=sys.stderr)
+rec = {"id": rid, "why": os.environ["HWHY"], "cost": os.environ["HCOST"],
        "escape": os.environ["HESC"],
        "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-with open(os.environ["HOROS_LEDGER"], "a") as f:
+with open(led, "a") as f:
     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-print("recorded " + rec["id"])
+print("recorded %s -> %s" % (rec["id"], led))
 PY
     ;;
   aporia)
@@ -60,16 +112,50 @@ PY
     id="${1:-}"; poles="${2:-}"; why="${3:-}"; trig="${4:-}"; files="${5:-}"
     if [ -z "$id" ] || [ -z "$poles" ] || [ -z "$why" ] || [ -z "$trig" ]; then
       echo "usage: horos aporia A<n> \"<pole1>|<pole2>[|...]\" <why_unresolved> <trigger> [files,csv]" >&2; exit 1; fi
+    warn_root
+    # D14: deposit-time validation (id format, duplicate, >=2 poles) — a 1-pole aporia was only
+    # caught later as an incomplete-ref block; fail it here with a copy-pasteable fix instead.
     HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HPOLES="$poles" HWHY="$why" HTRIG="$trig" HFILES="$files" python3 - <<'PY'
-import json, os, datetime
-rec = {"id": os.environ["HID"], "type": "aporia",
-       "poles": [x for x in os.environ["HPOLES"].split("|") if x],
+import json, os, re, shlex, datetime
+led = os.environ["HOROS_LEDGER"]; rid = os.environ["HID"]
+ids = set()
+try:
+    with open(led) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get("id"): ids.add(str(r["id"]))
+except FileNotFoundError:
+    pass
+def next_free(prefix):
+    n = 0
+    for i in ids:
+        m = re.match("^" + prefix + r"([1-9][0-9]*)$", i)
+        if m: n = max(n, int(m.group(1)))
+    return "%s%d" % (prefix, n + 1)
+poles = [x for x in os.environ["HPOLES"].split("|") if x]
+example = "horos aporia %s %s %s %s" % (next_free("A"),
+                                        shlex.quote("|".join(poles) if len(poles) >= 2 else "<pole1>|<pole2>"),
+                                        shlex.quote(os.environ["HWHY"]), shlex.quote(os.environ["HTRIG"]))
+if not re.match(r"^A[1-9][0-9]*$", rid):
+    raise SystemExit("error: HOROS-CLI-BADID '%s' 는 A<n> 형식이 아닙니다 (not of the form A<n>; nothing was recorded). "
+                     "Action: rerun with the suggested free id. 예: %s" % (rid, example))
+if rid in ids:
+    raise SystemExit("error: HOROS-CLI-DUPID %s 는 ledger에 이미 존재합니다 (already exists — appending again would silently shadow the original). "
+                     "다음 빈 ID (next free): %s. Action: rerun with the suggested free id. 예: %s"
+                     % (rid, next_free("A"), example))
+if len(poles) < 2:
+    raise SystemExit("error: HOROS-CLI-BADKIND 아포리아는 극(pole)이 2개 이상이어야 합니다 (needs >=2 poles, got %d; poles are '|'-separated in ONE quoted arg). "
+                     "Action: rerun with both poles in the second argument. 예: %s" % (len(poles), example))
+rec = {"id": rid, "type": "aporia", "poles": poles,
        "why_unresolved": os.environ["HWHY"], "trigger": os.environ["HTRIG"],
        "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-with open(os.environ["HOROS_LEDGER"], "a") as f:
+with open(led, "a") as f:
     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-print("recorded " + rec["id"] + " (aporia)")
+print("recorded %s (aporia) -> %s" % (rec["id"], led))
 PY
     ;;
   claim)
@@ -81,13 +167,62 @@ PY
     esac
     kind="$sub"; assertion="${2:-}"; files="${3:-}"; refs="${4:-}"; flags="${5:-}"
     case "$kind" in completion|consistency) ;; *)
+      echo "error: HOROS-CLI-BADKIND '$kind' 는 claim 종류가 아닙니다 (unknown claim kind; allowed: completion, consistency)." >&2
       echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2
       echo "       horos claim show | clear" >&2; exit 1 ;; esac
     if [ -z "$assertion" ] || [ -z "$files" ]; then
       echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2; exit 1; fi
-    HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
-import json, os, datetime, hashlib
+    warn_root
+    # D14: deposit-time validation. Flags are validated against the known set (a typo like
+    # 'test_added' used to become an unknown true-flag that silently disabled its invariant
+    # check in claim-guard); refs are validated for format AND ledger existence/completeness
+    # (an undefined ref used to surface only later as a Stop-time block). x_* flags are the
+    # documented extension namespace (PROPOSAL-audit-tier §6): accepted, never validated.
+    HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HLEDGER="$ROOT/decisions.jsonl" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
+import json, os, re, datetime, difflib, hashlib
 path = os.environ["HCLAIMS"]; ROOT = os.environ["HROOT"]
+KNOWN_FLAGS = ("tests_added", "consistent_with_refs")
+flags = [x for x in os.environ.get("HFLAGS", "").split(",") if x]
+bad = [x for x in flags if x not in KNOWN_FLAGS and not x.startswith("x_")]
+if bad:
+    hints = []
+    for b in bad:
+        m = difflib.get_close_matches(b, KNOWN_FLAGS, n=1, cutoff=0.6)
+        hints.append(b + (" -> did you mean '%s'?" % m[0] if m else ""))
+    raise SystemExit("error: HOROS-CLI-BADFLAG 알 수 없는 true-flag 입니다 (unknown flag would silently disable its invariant check): %s. "
+                     "허용(known): %s; 확장(extension): x_*. Action: fix the flag name and rerun."
+                     % ("; ".join(hints), ", ".join(KNOWN_FLAGS)))
+refs = [x for x in os.environ.get("HREFS", "").split(",") if x]
+badref = [r for r in refs if not re.match(r"^[DA][1-9][0-9]*$", r)]
+if badref:
+    raise SystemExit("error: HOROS-CLI-BADREF refs 형식 오류 (must be D<n> or A<n>): %s. "
+                     "Action: fix the ref ids and rerun." % ", ".join(badref))
+ledger = {}
+try:
+    with open(os.environ["HLEDGER"]) as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get("id"): ledger[str(r["id"])] = r
+except FileNotFoundError:
+    pass
+def complete(r):                               # D8: kind-aware completeness (mirror of the guards)
+    if r.get("type") == "aporia":
+        return bool(r.get("poles")) and all(str(r.get(k, "")).strip()
+                                             for k in ("why_unresolved", "trigger"))
+    return all(str(r.get(k, "")).strip() for k in ("why", "cost", "escape"))
+noref = []
+for r in refs:
+    if r not in ledger: noref.append(r + "(미정의/undefined)")
+    elif not complete(ledger[r]): noref.append(r + "(불완전/incomplete)")
+if noref:
+    first = (noref[0].split("(")[0])
+    fix = ("horos decide %s \"<why>\" \"<cost>\" \"<escape>\"" % first) if first.startswith("D") \
+          else ("horos aporia %s \"<pole1>|<pole2>\" \"<why_unresolved>\" \"<trigger>\"" % first)
+    raise SystemExit("error: HOROS-CLI-NOREF refs 가 ledger(decisions.jsonl)에 완비되어 있지 않습니다 (refs must exist and be complete BEFORE the claim): %s. "
+                     "Action: externalize the ref first, then rerun this claim. 예: %s" % (", ".join(noref), fix))
 def sha(p):
     try:
         with open(os.path.join(ROOT, p), "rb") as f: return hashlib.sha256(f.read()).hexdigest()
@@ -96,7 +231,8 @@ files = [x for x in os.environ["HFILES"].split(",") if x]
 binds = {f: sha(f) for f in files}
 missing = [f for f, h in binds.items() if h is None]
 if missing:
-    raise SystemExit("ERROR: 바인딩할 파일을 찾을 수 없습니다(변경을 먼저 디스크에 반영하세요): " + ", ".join(missing))
+    raise SystemExit("error: HOROS-CLI-NOFILE 바인딩할 파일을 찾을 수 없습니다 (bind targets missing on disk — write the changes to disk first, paths are ROOT-relative): "
+                     + ", ".join(missing))
 n = 0
 if os.path.exists(path):
     for line in open(path):
@@ -106,15 +242,14 @@ if os.path.exists(path):
         except Exception: continue
         i = str(r.get("id", ""))
         if i.startswith("C") and i[1:].isdigit(): n = max(n, int(i[1:]))
-flags = [x for x in os.environ.get("HFLAGS", "").split(",") if x]
 rec = {"id": "C%d" % (n + 1), "kind": os.environ["HKIND"], "assert": os.environ["HASSERT"],
        "evidence_files": files, "binds": binds,
-       "refs": [x for x in os.environ.get("HREFS", "").split(",") if x],
+       "refs": refs,
        "claims_true": {k: True for k in flags},
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 with open(path, "a") as f:
     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-print("recorded %s (%s, binds %d file(s))" % (rec["id"], rec["kind"], len(files)))
+print("recorded %s (%s, binds %d file(s)) -> %s" % (rec["id"], rec["kind"], len(files), path))
 PY
     ;;
   install)

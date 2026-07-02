@@ -138,6 +138,24 @@ printf 'def g(): return 999\n' > "$TMP/good.py"   # mutate bound file -> claim g
 mode block; cgd
 expect_empty "stale claim dropped (re-edit not false-blocked) -> pass" "$(fin sc6 "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh")"
 
+echo "== D14: CLI deposit-time validation (loud errors instead of silent dead records) =="
+CLIP="$TMP/cliproj"; mkdir -p "$CLIP"
+printf 'x=1\n' > "$CLIP/a.py"
+clip(){ CLAUDE_PROJECT_DIR="$CLIP" "$HOOKS/horos" "$@" 2>&1; }
+expect "decide: malformed id rejected" "HOROS-CLI-BADID" "$(clip decide foo w c e || true)"
+expect "decide: good deposit -> recorded with path" "recorded D1 -> " "$(clip decide D1 w c e)"
+expect "decide: duplicate id rejected" "HOROS-CLI-DUPID" "$(clip decide D1 w2 c2 e2 || true)"
+expect "decide: rejection suggests next free id" "D2" "$(clip decide D1 w2 c2 e2 || true)"
+expect "aporia: single pole rejected at deposit" "HOROS-CLI-BADKIND" "$(clip aporia A1 onlyone u t || true)"
+expect "claim: unknown kind rejected" "HOROS-CLI-BADKIND" "$(clip claim wrongkind x a.py || true)"
+expect "claim: typo flag rejected with correction" "did you mean 'tests_added'" "$(clip claim completion x a.py "" test_added || true)"
+expect "claim: x_ extension flag accepted" "recorded C1" "$(clip claim completion x a.py "" x_custom)"
+expect "claim: bad ref format rejected" "HOROS-CLI-BADREF" "$(clip claim completion x a.py D0x || true)"
+expect "claim: undefined ref rejected with fix command" "HOROS-CLI-NOREF" "$(clip claim completion x a.py D77 || true)"
+expect "claim: bind file missing -> NOFILE" "HOROS-CLI-NOFILE" "$(clip claim completion x nofile.py || true)"
+NOGIT="$TMP/nogit"; mkdir -p "$NOGIT"
+expect "write cmd, non-git CWD, no env -> ROOT notice" "HOROS-CLI-ROOT" "$(cd "$NOGIT" && env -u CLAUDE_PROJECT_DIR "$HOOKS/horos" decide D1 w c e 2>&1)"
+
 echo "== M2: dual-violation -> both Stop hooks block independently (no allow/deny conflict) =="
 mode block; reset_guard; rgd
 expect "finish-the-work blocks on dual-violation" '"decision": "block"' "$(fin m2a "$FIX/dual_violation.jsonl" | "$HOOKS/finish-the-work.sh")"
