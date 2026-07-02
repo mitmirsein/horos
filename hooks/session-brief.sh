@@ -67,6 +67,6 @@ cat <<CARD
 4) 가역성(철학4) — rm -rf, git reset --hard 류 실행 전에 백업/별도 커밋 (훅이 감지)
 5) 완료(철학5) — 약속으로 턴을 끝내지 말 것: 도구로 실행하고, 검증 출력과 함께 완료를 선언
 훅 메시지 계약: "[horos:warn|block] HOROS-<CODE> <설명>. Action: <영어 지시>. 예: <명령>" — Action 과 예시를 그대로 따르라 (follow the Action line verbatim).
-CLI: ${CLI}  (ledger ${ndec}건 · claims ${ncl}건 · 전체 명령: horos help)
+CLI: ${CLI}  (ledger ${ndec}건 · claims ${ncl}건; 'horos' 가 PATH에 없으면 위 절대경로로 실행하라 — use this absolute path if 'horos' is not on PATH)
 CARD
 exit 0
