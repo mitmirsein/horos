@@ -7,9 +7,10 @@ hook_event=PreToolUse
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 tool="$(json_field tool_name)"
-case "$tool" in Edit|Write|MultiEdit) ;; *) pass ;; esac
+case "$tool" in Edit|Write|MultiEdit|NotebookEdit) ;; *) pass ;; esac   # D18: notebooks too
 
 fp="$(json_field tool_input.file_path)"
+[ -n "$fp" ] || fp="$(json_field tool_input.notebook_path)"             # D18: NotebookEdit field
 if [ -z "$fp" ]; then pass; fi
 
 # horos's own state + the decision ledger are always writable, else /scope would deadlock

@@ -215,6 +215,24 @@ expect "brief: cli.path points at central CLI" "$HOOKS/horos" "$(cat "$TMP/.horo
 PNEW="$TMP/newproj"; mkdir -p "$PNEW"
 expect "brief: empty project starts at D1" "horos decide D1" "$(printf '{}' | CLAUDE_PROJECT_DIR="$PNEW" "$HOOKS/session-brief.sh")"
 
+echo "== D18: strict tier — warn-tier MISSING blocks, loop threshold 4, NotebookEdit =="
+expect "mode strict accepted" "mode = strict" "$("$HOOKS/horos" mode strict)"
+mode block; rgd
+expect "decision MISSING stays warn in block mode" "[horos:warn]" "$(fin d18a "$FIX/edit_code_bigchange.jsonl" | "$HOOKS/decision-guard.sh")"
+mode strict; rgd
+expect "decision MISSING blocks in strict" '"decision": "block"' "$(fin d18b "$FIX/edit_code_bigchange.jsonl" | "$HOOKS/decision-guard.sh")"
+mode strict; cgd
+expect "claim coverage-MISSING blocks in strict" '"decision": "block"' "$(fin d18c "$FIX/edit_code_claim_uncovered.jsonl" | "$HOOKS/claim-guard.sh")"
+mode strict; reset_guard
+fin d18lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+fin d18lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+fin d18lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh" >/dev/null
+expect "strict: 4th nudge still blocks (threshold 4)" '"decision": "block"' "$(fin d18lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect_empty "strict: 5th stop silenced" "$(fin d18lp "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect "NotebookEdit out-of-scope denied (strict)" '"permissionDecision": "deny"' "$(call scope-guard.sh '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$TMP"'/nb.ipynb"}}')"
+expect_empty "NotebookEdit with no scope declared -> pass" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s/nb.ipynb"}}' "$PNEW" | CLAUDE_PROJECT_DIR="$PNEW" "$HOOKS/scope-guard.sh")"
+mode warn
+
 echo "== M2: dual-violation -> both Stop hooks block independently (no allow/deny conflict) =="
 mode block; reset_guard; rgd
 expect "finish-the-work blocks on dual-violation" '"decision": "block"' "$(fin m2a "$FIX/dual_violation.jsonl" | "$HOOKS/finish-the-work.sh")"
@@ -254,6 +272,7 @@ S2="$(cat "$PROJ/.claude/settings.json")"
 expect "install: scope-guard referenced"             "scope-guard.sh"  "$S2"
 expect "install: full set incl claim-guard"          "claim-guard.sh"  "$S2"
 expect "install: session brief registered (D17)"     "session-brief.sh" "$S2"
+expect "install: NotebookEdit matcher (D18)"          "Edit|Write|MultiEdit|NotebookEdit" "$S2"
 expect "install: unrelated hook preserved"           "echo unrelated"  "$S2"
 expect_empty "install: old copy-style entry migrated away" "$(printf '%s' "$S2" | grep -F 'CLAUDE_PROJECT_DIR/hooks/scope-guard.sh' || true)"
 expect "install: .horos gitignored in target"        ".horos/"         "$(cat "$PROJ/.gitignore")"

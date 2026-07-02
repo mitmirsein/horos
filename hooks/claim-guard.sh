@@ -23,7 +23,7 @@ prev_sid=""; prev_n=0
 if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
 [ "$prev_sid" = "$sid" ] || prev_n=0
 [[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
-if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
+if [ "${prev_n:-0}" -ge "$(loop_threshold)" ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 
 # NOTE: the python is redirected to a tempfile rather than captured via $(...<<'PY'...).
 # bash's $() + here-doc scanner can prematurely close on parenthesis-heavy bodies; this avoids it.
@@ -149,14 +149,21 @@ case "${verdict%%	*}" in
     detail="$(printf '%s' "$verdict" | cut -f2)"
     fcsv="$(printf '%s' "$verdict" | cut -f3)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi   # D16: silence starts next Stop
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-CLM-BROKEN "claim/structural" "$detail" \
       "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. Action: fix the claim (or externalize the missing ref first) and redeposit. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (이 게이트는 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
   MISSING)
     fcsv="$(printf '%s' "$verdict" | cut -f2)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
-    printf '%s 0\n' "$sid" > "$GUARD"
-    log_violation "claim/uncovered" "significant code change, no fresh covering claim" HOROS-CLM-MISSING
-    warn_emit "HOROS-CLM-MISSING 유의미한 코드 변경에 이를 덮는 claim 이 없습니다. Action: deposit a verifiable claim covering the changed files. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (감사층, warn)" ;;
+    msg="유의미한 코드 변경에 이를 덮는 claim 이 없습니다. Action: deposit a verifiable claim covering the changed files. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added"
+    if [ "$(horos_mode)" = strict ]; then          # D18: strict promotes coverage-MISSING to a block
+      n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
+      if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi
+      enforce_stop HOROS-CLM-MISSING "claim/uncovered" "significant code change, no fresh covering claim" "$msg"
+    else
+      printf '%s 0\n' "$sid" > "$GUARD"
+      log_violation "claim/uncovered" "significant code change, no fresh covering claim" HOROS-CLM-MISSING
+      warn_emit "HOROS-CLM-MISSING $msg (감사층, warn)"
+    fi ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"; pass ;;
 esac

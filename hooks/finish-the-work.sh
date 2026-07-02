@@ -19,7 +19,7 @@ prev_sid=""; prev_n=0
 if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
 [ "$prev_sid" = "$sid" ] || prev_n=0
 [[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
-if [ "${prev_n:-0}" -ge 2 ]; then
+if [ "${prev_n:-0}" -ge "$(loop_threshold)" ]; then
   printf '%s 0\n' "$sid" > "$GUARD"   # already nudged twice this session: stop nagging
   pass
 fi
@@ -72,12 +72,12 @@ PY
 case "$verdict" in
   PROMISE)
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-FIN-PROMISE "finish/promise" "promise-without-action" \
       "직전 응답이 작업을 '하겠다'고 말만 하고 도구 호출 없이 끝났습니다. Action: perform the promised work NOW with tool calls, then end the turn. (약속한 그 작업을 지금 도구로 실행하세요.)" ;;
   CLAIM)
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-FIN-NOEVIDENCE "finish/claim" "completion-without-evidence" \
       "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. Action: run the verification with tools and report its output before claiming done. 예: bash tests/run.sh" ;;
   *)

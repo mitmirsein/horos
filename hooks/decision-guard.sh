@@ -23,7 +23,7 @@ prev_sid=""; prev_n=0
 if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
 [ "$prev_sid" = "$sid" ] || prev_n=0
 [[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
-if [ "${prev_n:-0}" -ge 2 ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
+if [ "${prev_n:-0}" -ge "$(loop_threshold)" ]; then printf '%s 0\n' "$sid" > "$GUARD"; pass; fi
 
 # NOTE: python output goes to a tempfile, not $(...<<'PY'...) — bash's $() + here-doc scanner
 # can prematurely close on parenthesis-heavy bodies (same pattern as claim-guard). # D15
@@ -117,14 +117,21 @@ case "${verdict%%	*}" in
       *)  fix="horos decide $bid \"<why>\" \"<cost>\" \"<escape>\"" ;;
     esac
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq 2 ]; then log_event HOROS-TEL-LOOPGUARD "decision:$sid"; fi   # D16: silence starts next Stop
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "decision:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-DEC-BROKEN "decision/broken-ref" "$detail" \
       "코드 주석이 결정/아포리아 ID를 참조하지만 ledger(decisions.jsonl)에 없거나 불완전합니다: ${detail}. Action: externalize the referenced id into the ledger now, then end the turn. 예: ${fix}" ;;
   MISSING)
     nfd="$(printf '%s' "$verdict" | cut -f2)"; [ -n "$nfd" ] || nfd="D<n>"
-    printf '%s 0\n' "$sid" > "$GUARD"
-    log_violation "decision/not-externalized" "significant code change, no D-id reference" HOROS-DEC-MISSING
-    warn_emit "HOROS-DEC-MISSING 이번 세션에 유의미한 코드 변경이 있었지만 결정(D-id)을 외화한 흔적이 없습니다. 중요한 선택이었다면 기록하고 코드 주석으로 참조하세요. Action: record the key decision, then reference it from a code comment. 예: horos decide ${nfd} \"<why>\" \"<cost>\" \"<escape>\"  후 코드에  # ${nfd}" ;;
+    msg="이번 세션에 유의미한 코드 변경이 있었지만 결정(D-id)을 외화한 흔적이 없습니다. 중요한 선택이었다면 기록하고 코드 주석으로 참조하세요. Action: record the key decision, then reference it from a code comment. 예: horos decide ${nfd} \"<why>\" \"<cost>\" \"<escape>\"  후 코드에  # ${nfd}"
+    if [ "$(horos_mode)" = strict ]; then          # D18: strict promotes MISSING to a block
+      n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
+      if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "decision:$sid"; fi
+      enforce_stop HOROS-DEC-MISSING "decision/not-externalized" "significant code change, no D-id reference" "$msg"
+    else
+      printf '%s 0\n' "$sid" > "$GUARD"
+      log_violation "decision/not-externalized" "significant code change, no D-id reference" HOROS-DEC-MISSING
+      warn_emit "HOROS-DEC-MISSING $msg"
+    fi ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"; pass ;;
 esac

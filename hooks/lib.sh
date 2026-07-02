@@ -5,6 +5,7 @@
 # Design contracts:
 #  - warn mode  : never blocks; notifies the human via systemMessage + logs. (observation stage)
 #  - block mode : actually denies (PreToolUse) / continues the turn (Stop) + logs.
+#  - strict mode: block + the warn-tier MISSING paths also block + loop threshold 2->4. (D18)
 #  - JSON is parsed/emitted with python3 stdlib only (portable, no platform-specific deps).
 #
 # Code registry (D15) — every verdict/telemetry line carries ONE stable mnemonic code so any
@@ -58,10 +59,17 @@ PY
 horos_mode() {
   # robust to an absent mode file (fresh project): a bare `< file` redirection fails
   # before 2>/dev/null applies, leaking a shell error — so guard with -f first. (D7)
+  # Unknown values clamp to warn (weakest), so a corrupted mode file cannot over-enforce.
   local m=""
   [ -f "$HOROS_STATE/mode" ] && m="$(tr -d '[:space:]' < "$HOROS_STATE/mode" 2>/dev/null)"
-  [ -n "$m" ] && printf '%s' "$m" || printf 'warn'
+  case "$m" in warn|block|strict) printf '%s' "$m" ;; *) printf 'warn' ;; esac
 }
+
+# blocking_mode : does the current mode actually deny/block? (strict acts like block, D18)
+blocking_mode() { case "$(horos_mode)" in block|strict) return 0 ;; *) return 1 ;; esac; }
+
+# loop_threshold : nudges per session before a Stop gate goes quiet (strict gets more, D18)
+loop_threshold() { if [ "$(horos_mode)" = strict ]; then printf 4; else printf 2; fi; }
 
 log_violation() { # rule detail [code]  — code is the 5th tab column (append-only, D15)
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${hook_event:-?}" "$1" "$2" "${3:-}" \
@@ -130,13 +138,13 @@ pass() { exit 0; }
 # enforce_pretool code rule detail reason : act per mode, then exit 0 (D15: leading code arg)
 enforce_pretool() {
   log_violation "$2" "$3" "$1"
-  if [ "$(horos_mode)" = block ]; then deny_pretool "$1 $4"; else warn_emit "$1 $4"; fi
+  if blocking_mode; then deny_pretool "$1 $4"; else warn_emit "$1 $4"; fi
   exit 0
 }
 
 # enforce_stop code rule detail reason : act per mode, then exit 0 (D15: leading code arg)
 enforce_stop() {
   log_violation "$2" "$3" "$1"
-  if [ "$(horos_mode)" = block ]; then block_stop "$1 $4"; else warn_emit "$1 $4"; fi
+  if blocking_mode; then block_stop "$1 $4"; else warn_emit "$1 $4"; fi
   exit 0
 }

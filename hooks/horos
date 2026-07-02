@@ -52,9 +52,9 @@ PY
   mode)
     sub="${1:-show}"
     case "$sub" in
-      warn|block) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;
+      warn|block|strict) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;  # D18
       show|"")    echo "$(read_mode)" ;;
-      *) echo "usage: horos mode warn|block|show" >&2; exit 1 ;;
+      *) echo "usage: horos mode warn|block|strict|show" >&2; exit 1 ;;
     esac ;;
   decide)
     id="${1:-}"; why="${2:-}"; cost="${3:-}"; esc="${4:-}"; files="${5:-}"
@@ -274,7 +274,7 @@ def hookcmd(name):                       # fail-open: a missing/moved central ho
     p = srcpath(name)
     return "[ -x %s ] && %s || true" % (p, p)
 pre = [
-    {"matcher": "Edit|Write|MultiEdit",
+    {"matcher": "Edit|Write|MultiEdit|NotebookEdit",   # D18: notebooks covered too
      "hooks": [{"type": "command", "command": hookcmd("scope-guard.sh"), "timeout": 15}]},
     {"matcher": "Bash",
      "hooks": [{"type": "command", "command": hookcmd("reversibility-guard.sh"), "timeout": 15}]},
@@ -395,7 +395,7 @@ PY
 horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos scope set <glob>...   declare the editable boundary             (philosophy 3)
   horos scope show | clear
-  horos mode warn|block|show  staged enforcement toggle
+  horos mode warn|block|strict|show  staged enforcement toggle (strict: warn-tier도 block + 루프가드 4회, D18)
   horos decide D<n> <why> <cost> <escape> [files]   externalize a decision  (philosophy 2)
   horos aporia A<n> "<p1>|<p2>" <why_unresolved> <trigger> [files]   externalize a held tension (philosophy 2)
   horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
