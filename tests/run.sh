@@ -182,6 +182,8 @@ expect "install: .horos gitignored in target"        ".horos/"         "$(cat "$
 "$HOOKS/horos" install "$PROJ" >/dev/null 2>&1        # re-run: must stay idempotent
 expect "install: idempotent (scope-guard one line)"  "1" "$(grep -cF 'scope-guard.sh' "$PROJ/.claude/settings.json")"
 expect "doctor [target]: referenced hook resolves OK" "scope-guard" "$("$HOOKS/horos" doctor "$PROJ")"
+expect "doctor: central version stamp" "vers : $(cat "$HOOKS/../VERSION")" "$("$HOOKS/horos" doctor "$PROJ")"
+expect "doctor: missing VERSION -> unknown (copied CLI)" "vers : unknown" "$("$TMP/hooks/horos" doctor "$PROJ")"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
