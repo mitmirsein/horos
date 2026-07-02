@@ -282,6 +282,49 @@ expect "doctor [target]: referenced hook resolves OK" "scope-guard" "$("$HOOKS/h
 expect "doctor: central version stamp" "vers : $(cat "$HOOKS/../VERSION")" "$("$HOOKS/horos" doctor "$PROJ")"
 expect "doctor: missing VERSION -> unknown (copied CLI)" "vers : unknown" "$("$TMP/hooks/horos" doctor "$PROJ")"
 
+echo "== D19/D20: plugin dispatch — activation marker + local-wiring precedence =="
+PD="$HOOKS/plugin-dispatch.sh"
+RROOT="$(cd "$HOOKS/.." && pwd)"
+PLGP="$TMP/plugproj"; mkdir -p "$PLGP"
+expect_empty "plugin: no .horos marker -> inert (D19)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/x.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
+"$HOOKS/horos" init "$PLGP" >/dev/null
+expect "init: marker + default mode warn" "warn" "$(cat "$PLGP/.horos/mode")"
+expect "init: .horos gitignored" ".horos/" "$(cat "$PLGP/.gitignore")"
+"$HOOKS/horos" init "$PLGP" >/dev/null
+expect "init: idempotent (gitignore one line)" "1" "$(grep -cxF '.horos/' "$PLGP/.gitignore" || true)"
+expect "plugin: session-start delegates brief (empty ledger -> D1)" "horos decide D1" "$(printf '{}' | CLAUDE_PROJECT_DIR="$PLGP" "$PD" session-start)"
+CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" scope set 'src/**' >/dev/null
+CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" mode block >/dev/null
+expect "plugin: marker present -> delegates scope-guard (deny)" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
+expect "plugin: stop-decision delegates (broken ref blocks)" '"decision": "block"' "$(printf '{"session_id":"pg1","transcript_path":"%s"}' "$FIX/edit_code_brokenref.jsonl" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" stop-decision)"
+mkdir -p "$PLGP/.claude"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"x/scope-guard.sh"}]}]}}' > "$PLGP/.claude/settings.json"
+expect_empty "plugin: local wiring present -> defers (D20)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
+"$HOOKS/horos" uninstall "$PLGP" >/dev/null
+expect_empty "uninstall: horos wiring stripped" "$(grep -F 'scope-guard.sh' "$PLGP/.claude/settings.json" || true)"
+pchk="$TMP/plugchk.out"
+HOOKS_DIR="$HOOKS" python3 - > "$pchk" <<'PYX'
+import json, os, re
+hd = os.environ["HOOKS_DIR"]; root = os.path.dirname(hd)
+pj = json.load(open(os.path.join(root, ".claude-plugin", "plugin.json")))
+ver = open(os.path.join(root, "VERSION")).read().strip()
+out = ["version:ok" if pj.get("version") == ver
+       else "version:MISMATCH(%s!=%s)" % (pj.get("version"), ver)]
+cfg = json.load(open(os.path.join(hd, "hooks.json")))
+evs = set()
+for entries in (cfg.get("hooks") or {}).values():
+    for e in entries:
+        for h in e.get("hooks", []):
+            m = re.search(r'plugin-dispatch\.sh"?\s+(\S+)', h.get("command", ""))
+            if m: evs.add(m.group(1))
+src = open(os.path.join(hd, "plugin-dispatch.sh")).read()
+missing = [e for e in sorted(evs) if (e + ")") not in src]
+out.append("events:ok" if evs and not missing else "events:MISSING:" + ",".join(missing))
+print(" ".join(out))
+PYX
+expect "plugin packaging consistent (version + dispatch map)" "version:ok events:ok" "$(cat "$pchk")"
+expect_empty "plugin surface parity (.claude symlinks == root canon)" "$( { cmp "$RROOT/.claude/commands/scope.md" "$RROOT/commands/scope.md" 2>&1; cmp "$RROOT/.claude/commands/horos-mode.md" "$RROOT/commands/horos-mode.md" 2>&1; cmp "$RROOT/.claude/skills/contract-first/SKILL.md" "$RROOT/skills/contract-first/SKILL.md" 2>&1; } || true)"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

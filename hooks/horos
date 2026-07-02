@@ -29,6 +29,10 @@ warn_root() {
   fi
 }
 
+# single source for what counts as a horos hook entry in a settings.json (install/uninstall/doctor)
+HOROS_BASENAMES="scope-guard.sh reversibility-guard.sh finish-the-work.sh decision-guard.sh claim-guard.sh parent-bridge.sh session-brief.sh"
+export HOROS_BASENAMES
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   scope)
@@ -291,8 +295,7 @@ sess = [                                 # D17: protocol self-injection at sessi
         {"type": "command", "command": hookcmd("session-brief.sh"), "timeout": 10},
     ]},
 ]
-BASENAMES = ("scope-guard.sh", "reversibility-guard.sh", "finish-the-work.sh",
-             "decision-guard.sh", "claim-guard.sh", "parent-bridge.sh", "session-brief.sh")
+BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
 def is_horos(entry):
     return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
 cfgdir = os.path.join(target, ".claude"); os.makedirs(cfgdir, exist_ok=True)
@@ -328,6 +331,59 @@ print("  verify         : horos doctor %s" % target)
 print("  note           : hooks load at session start — (re)open the target in Claude Code; mode starts warn.")
 PY
     ;;
+  init)
+    # D19 — plugin-era adoption: create the ACTIVATION MARKER (.horos/) + mode=warn + gitignore.
+    # No settings.json surgery: a globally-enabled horos plugin picks the project up next
+    # session BECAUSE the marker exists (plugin-dispatch gate). Idempotent.
+    target="${1:-$ROOT}"
+    [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
+    mkdir -p "$target/.horos"
+    [ -f "$target/.horos/mode" ] || printf 'warn\n' > "$target/.horos/mode"
+    gi="$target/.gitignore"
+    if ! grep -qxF '.horos/' "$gi" 2>/dev/null; then
+      { echo "# horos runtime state (machine-local)"; echo ".horos/"; } >> "$gi"
+    fi
+    echo "initialized horos activation marker -> $target/.horos (mode=warn, gitignored)"
+    echo "  plugin      : hooks engage next session IF the horos plugin is enabled"
+    echo "  no plugin?  : horos install $target  (reference wiring, no plugin needed)"
+    echo "  verify      : horos doctor $target"
+    ;;
+  uninstall)
+    # D20 — strip horos reference wiring from a target settings.json (the plugin path takes
+    # over next session if enabled + marker present; or horos detaches entirely).
+    target="${1:-}"
+    [ -n "$target" ] || { echo "usage: horos uninstall <target-project-dir>" >&2; exit 1; }
+    [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
+    HOROS_TARGET="$target" python3 - <<'PY'
+import json, os
+target = os.path.abspath(os.environ["HOROS_TARGET"])
+cfgpath = os.path.join(target, ".claude", "settings.json")
+if not os.path.exists(cfgpath):
+    print("nothing to remove (no .claude/settings.json)"); raise SystemExit
+try:
+    cfg = json.load(open(cfgpath))
+except Exception as e:
+    raise SystemExit("error: target .claude/settings.json is not valid JSON: %s" % e)
+BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
+def is_horos(entry):
+    return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
+hooks = cfg.get("hooks") or {}
+removed = 0
+for ev in list(hooks.keys()):
+    kept = [e for e in hooks[ev] if not is_horos(e)]
+    removed += len(hooks[ev]) - len(kept)
+    if kept:
+        hooks[ev] = kept
+    else:
+        del hooks[ev]
+if not hooks and "hooks" in cfg:
+    del cfg["hooks"]
+with open(cfgpath, "w") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
+print("removed %d horos hook entr%s -> %s" % (removed, "y" if removed == 1 else "ies", cfgpath))
+print("  note: hooks unload next session; .horos/ marker kept (plugin takes over if enabled)")
+PY
+    ;;
   log)    tail -n "${1:-20}" "$S/violations.log" 2>/dev/null || echo "(no violations logged)" ;;
   doctor)
     DT="${1:-$ROOT}"; DS="$DT/.horos"          # D12: optional [target] — point doctor at a consuming project
@@ -335,6 +391,14 @@ PY
     echo "root : $DT"
     # central version stamp (absent/unreadable VERSION -> unknown, never an error)
     echo "vers : $([ -f "$CENTRAL/VERSION" ] && tr -d '[:space:]' < "$CENTRAL/VERSION" 2>/dev/null || echo unknown)"
+    # D19/D20: plugin packaging + per-target activation/precedence
+    echo "plugn: $([ -f "$CENTRAL/.claude-plugin/plugin.json" ] && echo "packaged (.claude-plugin)" || echo "not packaged")"
+    echo "activ: $([ -d "$DS" ] && echo ".horos present (plugin-eligible)" || echo ".horos absent — run: horos init $DT")"
+    if grep -qE 'scope-guard\.sh|parent-bridge\.sh' "$DT/.claude/settings.json" 2>/dev/null; then
+      echo "prece: local-settings (reference wiring wins; plugin defers, D20)"
+    else
+      echo "prece: plugin (engages if enabled + marker present)"
+    fi
     echo "mode : $dmode"
     echo "scope: $([ -f "$DS/scope.json" ] && echo declared || echo none)"
     echo "decns: $([ -f "$DT/decisions.jsonl" ] && tr -cd '\n' < "$DT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
@@ -401,8 +465,10 @@ horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
   horos claim show | clear
   horos install <target>      wire a project to THIS central horos by reference, no copy (D12)
+  horos init [target]         plugin-era opt-in: create .horos marker + mode=warn + gitignore (D19)
+  horos uninstall <target>    strip reference wiring (plugin takes over if enabled, D20)
   horos log [N]               recent violations
-  horos doctor [target]       installation check (local or referenced wiring)
+  horos doctor [target]       installation check (wiring, version, plugin, activation, health)
 EOF
     ;;
 esac

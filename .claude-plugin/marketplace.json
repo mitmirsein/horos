@@ -1,0 +1,13 @@
+{
+  "name": "horos",
+  "owner": {
+    "name": "mitmirsein"
+  },
+  "plugins": [
+    {
+      "name": "horos",
+      "source": "./",
+      "description": "Discipline layer enforcing 5 work philosophies via deterministic hooks (per-project opt-in with `horos init`)."
+    }
+  ]
+}
