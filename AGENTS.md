@@ -15,19 +15,26 @@ horos 는 그 철학을 코드로 강제하는 레이어이고, 이 레포 자�
 4. **가역성 선호** — 갈아엎지 말고 얹는다. 파괴·비가역 명령(`rm -rf`, `git reset --hard`, `--force`) 전에 dry-run/백업/별도 커밋.
 5. **'완료'의 넓은 정의** — 동작+테스트+문서 현행화+검증까지가 한 단위. 약속으로 턴을 끝내지 말고 도구로 실행하라.
 
+## 판정 메시지 계약 (D15)
+
+모든 판정·CLI 에러는 `[horos:block|warn] <CODE> <한국어>. Action: <영어 명령형 1줄>. 예: <실값 채운 명령 1개>` 형식을 따른다
+(FIN 계열은 예시 생략 가능 — 액션이 특정 명령이 아니라 "도구 실행"이므로). 코드 레지스트리 정본은 `hooks/lib.sh` 상단 주석 표.
+새 판정 경로를 추가하면 반드시 이 계약에 맞추고 레지스트리 표·README 표를 함께 갱신한다.
+
 ## 규칙
 
 - 코드/훅을 수정하면 반드시 `bash tests/run.sh` 를 돌려 **전체 통과**를 확인하고 결과를 보고한다 (철학 5).
 - 훅 스크립트는 순수 bash + python3 stdlib 만 사용한다. venv·jq·절대경로 심링크 금지 (멀티머신 이식성).
 - `.horos/` 는 런타임 상태다(커밋·동기화 금지). `decisions.jsonl` 은 공유 산출물이라 커밋 대상.
-- warn→block 은 단계적으로만 승격한다. `horos log` 로 오탐을 검토하기 전에 block 으로 올리지 않는다.
-- 새 강제 규칙을 추가하면: 훅 + 단위검증 fixture + README 매핑표 + 이 파일을 **함께** 갱신한다 (계약 변경의 동반 파일).
+- warn→block→strict 는 단계적으로만 승격한다(D18). `horos log`/`horos doctor`(health) 로 오탐을 검토하기 전에 올리지 않는다. strict 는 하위 모델 구동 등 규약 완전 강제가 필요할 때만.
+- 새 강제 규칙을 추가하면: 훅 + 단위검증 fixture + README 매핑표 + 이 파일 + **`hooks/hooks.json`(플러그인)·`install` 방출부 패리티**를 **함께** 갱신한다 (계약 변경의 동반 파일; 매처·이벤트가 세 곳에 존재한다 — settings.json·hooks.json·install).
+- 커맨드(`commands/`)·스킬(`skills/`)의 정본은 **레포 루트**다(플러그인 노출용, D19). `.claude/` 쪽은 상대 심링크 — 심링크를 실파일로 대체하지 말 것(드리프트 재발).
 - horos 가 조상 루트의 하위 폴더라 자체 세션으로 열리지 않을 땐, 조상 `.claude/settings.json` 에 `hooks/parent-bridge.sh`(pre-edit/pre-bash/stop)를 등록해 강제한다 — horos 하위 작업만 위임하고 타 프로젝트엔 무영향(D11). decision/claim 은 `CLAUDE_PROJECT_DIR` 밖 파일을 판정하지 않는다(D10).
-- 다른 프로젝트에 horos 를 얹을 땐 hooks/ 를 **복사하지 말고** `hooks/horos install <target>` 로 중앙 소스를 *참조*시킨다 — 복사본은 드리프트한다(D12). 훅은 Claude Code 가 주입하는 `CLAUDE_PROJECT_DIR` 로 대상에 묶이고, CLI 는 그 값이 없으면 CWD 의 git 루트로 ROOT 를 잡는다(D13). `hooks/horos doctor <target>` 로 참조 배선을 점검한다.
+- 다른 프로젝트에 horos 를 얹을 땐 hooks/ 를 **복사하지 말고**: 플러그인이 설치돼 있으면 `hooks/horos init <target>`(활성 마커만, D19), 아니면 `hooks/horos install <target>` 로 중앙 소스를 *참조*시킨다 — 복사본은 드리프트한다(D12). 두 경로가 겹치면 로컬 배선이 이긴다(D20; 이관은 `horos uninstall <target>`). 훅은 Claude Code 가 주입하는 `CLAUDE_PROJECT_DIR` 로 대상에 묶이고, CLI 는 그 값이 없으면 CWD 의 git 루트로 ROOT 를 잡는다(D13). `hooks/horos doctor <target>` 로 배선·버전·활성·health 를 점검한다.
 
 ## 검증
 
 ```
-bash tests/run.sh        # unit checks (scope/reversibility/finish/decision × warn/block)
-hooks/horos doctor       # 설치 점검
+bash tests/run.sh        # unit checks (scope/reversibility/finish/decision/claim/plugin × warn/block/strict)
+hooks/horos doctor       # 설치 점검 (version·plugin·activation·precedence·health)
 ```
