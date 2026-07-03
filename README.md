@@ -135,9 +135,11 @@ hooks/horos init ~/path/to/project                    # .horos 옵트인 마커 
 ```
 
 - PreToolUse → scope/reversibility(범위 밖 수정·파괴 명령 **차단**), PreInvocation → 규약 카드 주입.
+- Stop → decision + claim 게이트(D25): pre-tool 이 변경 파일을 세션별로 누적하고, Stop 때 그걸로
+  합성 transcript 를 만들어 참조무결성·claim 감사를 판정한다(broken → 멈춤 차단=`{"decision":"continue"}`).
 - 판정 포맷 차이(agy `{"decision":"deny"}` · 무의견=무출력, D24)는 어댑터가 흡수한다.
-- **한계**: Stop-tier 게이트(finish/decision/claim)는 agy transcript 스키마가 달라 **다음 증분**(미배선).
-  현재 agy 에선 PreToolUse 강제(철학 3·4) + 세션 브리프까지 작동한다.
+- **한계**: finish-the-work(철학 5)만 미배선 — agy 의 Stop 페이로드에 마지막 응답 텍스트가 없어 약속/완료
+  선언 판정을 못 한다. 현재 agy 에선 철학 2·3·4 + 감사층 claim + 세션 브리프가 작동한다.
 
 ### 경로 B — 참조 설치 (D12, 플러그인 없이)
 
