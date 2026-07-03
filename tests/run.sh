@@ -365,6 +365,45 @@ PYX
 expect "plugin packaging consistent (version + dispatch map)" "version:ok events:ok" "$(cat "$pchk")"
 expect_empty "plugin surface parity (.claude symlinks == root canon)" "$( { cmp "$RROOT/.claude/commands/scope.md" "$RROOT/commands/scope.md" 2>&1; cmp "$RROOT/.claude/commands/horos-mode.md" "$RROOT/commands/horos-mode.md" 2>&1; cmp "$RROOT/.claude/skills/contract-first/SKILL.md" "$RROOT/skills/contract-first/SKILL.md" 2>&1; } || true)"
 
+echo "== D23: agy-adapter — translate Antigravity CLI hook I/O to/from horos judges =="
+AD="$HOOKS/agy-adapter.sh"
+AP="$TMP/agyproj"; mkdir -p "$AP/src" "$AP/.horos"
+printf 'block\n' > "$AP/.horos/mode"
+CLAUDE_PROJECT_DIR="$AP" "$HOOKS/horos" scope set 'src/**' >/dev/null
+agyin(){ printf '{"toolCall":{"name":"%s","args":%s},"workspacePaths":["%s"]}' "$1" "$2" "$AP"; }
+# PreToolUse translation: agy write_file -> scope-guard -> agy decision
+expect "agy: out-of-scope write -> agy deny" '"decision": "deny"' "$(agyin write_file '{"AbsolutePath":"'"$AP"'/secret.txt"}' | "$AD" pre-tool)"
+expect "agy: deny reason carries horos code" "HOROS-SCOPE-OUT" "$(agyin write_file '{"AbsolutePath":"'"$AP"'/secret.txt"}' | "$AD" pre-tool)"
+expect_empty "agy: in-scope write -> silent (no opinion)" "$(agyin write_file '{"AbsolutePath":"'"$AP"'/src/a.py"}' | "$AD" pre-tool)"
+expect_empty "agy: read tool (view_file) -> not gated, silent" "$(agyin view_file '{"AbsolutePath":"'"$AP"'/x"}' | "$AD" pre-tool)"
+# run_command -> reversibility-guard
+expect "agy: destructive run_command -> agy deny" '"decision": "deny"' "$(agyin run_command '{"CommandLine":"rm -rf build"}' | "$AD" pre-tool)"
+expect "agy: destructive reason code" "HOROS-REV-DESTRUCT" "$(agyin run_command '{"CommandLine":"rm -rf build"}' | "$AD" pre-tool)"
+expect_empty "agy: safe run_command -> silent" "$(agyin run_command '{"CommandLine":"ls -la"}' | "$AD" pre-tool)"
+# camelCase/alias arg keys tolerated
+expect "agy: alias arg key (command) still read" '"decision": "deny"' "$(agyin run_command '{"command":"git reset --hard"}' | "$AD" pre-tool)"
+# warn mode -> allow + surfaced reason (not deny)
+printf 'warn\n' > "$AP/.horos/mode"
+expect "agy: warn mode out-of-scope -> allow+reason" '"decision": "allow"' "$(agyin write_file '{"AbsolutePath":"'"$AP"'/secret.txt"}' | "$AD" pre-tool)"
+printf 'block\n' > "$AP/.horos/mode"
+# opt-in gate: a project without .horos is never governed
+NOAP="$TMP/agynohoros"; mkdir -p "$NOAP"
+expect_empty "agy: no .horos -> silent (opt-in)" "$(printf '{"toolCall":{"name":"write_file","args":{"AbsolutePath":"%s/x"}},"workspacePaths":["%s"]}' "$NOAP" "$NOAP" | "$AD" pre-tool)"
+# session-start -> PreInvocation injectSteps carrying the protocol card
+expect "agy: session-start injects protocol card" "injectSteps" "$(printf '{"workspacePaths":["%s"]}' "$AP" | "$AD" session-start)"
+expect "agy: injected card carries mode" "mode=" "$(printf '{"workspacePaths":["%s"]}' "$AP" | "$AD" session-start)"
+expect "agy: no .horos session-start -> empty injectSteps" '{"injectSteps":[]}' "$(printf '{"workspacePaths":["%s"]}' "$NOAP" | "$AD" session-start)"
+# install --harness agy: portable .agents/hooks.json, idempotent
+AGYT="$TMP/agyinstall"; mkdir -p "$AGYT"
+"$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1
+AGYCFG="$(cat "$AGYT/.agents/hooks.json" 2>/dev/null)"
+expect "install --harness agy: writes .agents/hooks.json" "agy-adapter.sh" "$AGYCFG"
+expect "install --harness agy: routes pre-tool + session-start" "session-start" "$AGYCFG"
+expect "install --harness agy: portable \$HOME path" '$HOME/' "$AGYCFG"
+expect "install --harness agy: .horos gitignored" ".horos/" "$(cat "$AGYT/.gitignore")"
+"$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1
+expect "install --harness agy: idempotent (one horos key)" "1" "$(grep -c '"horos"' "$AGYT/.agents/hooks.json")"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

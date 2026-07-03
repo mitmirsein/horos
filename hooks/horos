@@ -262,10 +262,58 @@ PY
     # a $HOME-relative path; Claude Code sets CLAUDE_PROJECT_DIR=<target> for hook runs, so lib.sh
     # resolves HOROS_ROOT=<target> and state/decisions stay per-project. Fail-open if central horos is
     # absent/moved; idempotent + migrates (strips any prior horos entries before re-pointing).
+    harness=claude                          # D23: --harness agy generates an agy .agents/hooks.json instead
+    while [ "${1:-}" ]; do case "$1" in
+      --harness) harness="${2:-claude}"; shift 2 ;;
+      --harness=*) harness="${1#--harness=}"; shift ;;
+      *) break ;;
+    esac; done
     target="${1:-}"
-    [ -n "$target" ] || { echo "usage: horos install <target-project-dir>" >&2; exit 1; }
+    [ -n "$target" ] || { echo "usage: horos install [--harness claude|agy] <target-project-dir>" >&2; exit 1; }
     [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
-    HOROS_SRC="$ROOT" HOROS_TARGET="$target" python3 - <<'PY'
+    if [ "$harness" = agy ]; then
+      # D23 — wire an Antigravity CLI (agy) project by reference: .agents/hooks.json routes agy's
+      # PreToolUse/PreInvocation through the central agy-adapter, which translates to/from horos's
+      # unchanged Claude-shaped judges. $HOME-relative path (agy runs commands via sh -c). Opt-in
+      # still needs .horos/ (run `horos init <target>`); idempotent (strips a prior "horos" key).
+      HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
+import json, os
+src = os.path.abspath(os.environ["HOROS_SRC"]); target = os.path.abspath(os.environ["HOROS_TARGET"])
+home = os.path.expanduser("~")
+portable = (src == home or src.startswith(home + os.sep))
+rel = src[len(home):].lstrip("/") if portable else None
+adapter = ('"$HOME/%s/hooks/agy-adapter.sh"' % rel) if portable else ('"%s/hooks/agy-adapter.sh"' % src)
+block = {"horos": {
+    "PreToolUse": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": adapter + " pre-tool", "timeout": 15}]}],
+    "PreInvocation": [
+        {"type": "command", "command": adapter + " session-start", "timeout": 10}]}}
+cfgdir = os.path.join(target, ".agents"); os.makedirs(cfgdir, exist_ok=True)
+cfgpath = os.path.join(cfgdir, "hooks.json")
+cfg = {}
+if os.path.exists(cfgpath):
+    try: cfg = json.load(open(cfgpath))
+    except Exception as e: raise SystemExit("error: target .agents/hooks.json is not valid JSON: %s" % e)
+cfg.pop("horos", None)                      # idempotent: drop prior horos hook, keep others
+cfg.update(block)
+with open(cfgpath, "w") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
+gi = os.path.join(target, ".gitignore")
+lines = open(gi).read().splitlines() if os.path.exists(gi) else []
+if ".horos/" not in lines:
+    with open(gi, "a") as f:
+        f.write(("\n" if (lines and lines[-1] != "") else "") + "# horos runtime state (machine-local)\n.horos/\n")
+print("installed horos (agy, by reference) -> %s/.agents/hooks.json" % target)
+print("  central adapter: %s" % (("$HOME/" + rel) if portable else src) + "/hooks/agy-adapter.sh")
+print("  events         : PreToolUse (scope + reversibility) + PreInvocation (protocol brief)")
+print("  activate       : horos init %s   (creates .horos opt-in marker; mode starts warn)" % target)
+if not portable:
+    print("  WARNING: central horos is not under $HOME — wrote an absolute path (may not resolve on another machine)")
+print("  note           : Stop-tier gates (finish/decision/claim) are the next agy increment; not wired yet")
+PY
+      exit 0
+    fi
+    HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
 import json, os
 src = os.path.abspath(os.environ["HOROS_SRC"])
 target = os.path.abspath(os.environ["HOROS_TARGET"])
