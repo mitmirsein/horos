@@ -122,6 +122,23 @@ hooks/horos doctor ~/path/to/your-project      # plugn/activ/prece 행 확인
 참조 배선을 걷어낼 때만 일어난다. 조상 워크스페이스의 parent-bridge 도 그대로 유효하다
 (조상 루트엔 `.horos` 가 없어 플러그인이 자연 침묵).
 
+### 경로 C — Antigravity CLI (agy, D23)
+
+horos 는 Claude Code 전용이 아니다. **agy(Antigravity CLI)** 는 자체 라이프사이클 훅을 갖고 있고
+외부 명령 훅의 **하드 차단**을 지원한다(실측 확인). `hooks/agy-adapter.sh` 가 유일한 agy-결합 파일로,
+agy 훅 I/O(`toolCall.name/args`)를 기존 판사가 쓰는 Claude 모양으로 번역한다 — scope-guard·
+reversibility-guard·session-brief 는 한 줄도 고치지 않고 그대로 돈다.
+
+```bash
+hooks/horos install --harness agy ~/path/to/project   # 대상 .agents/hooks.json 에 어댑터를 참조 등록
+hooks/horos init ~/path/to/project                    # .horos 옵트인 마커 (agy도 동일 게이트)
+```
+
+- PreToolUse → scope/reversibility(범위 밖 수정·파괴 명령 **차단**), PreInvocation → 규약 카드 주입.
+- 판정 포맷 차이(agy `{"decision":"deny"}` · 무의견=무출력, D24)는 어댑터가 흡수한다.
+- **한계**: Stop-tier 게이트(finish/decision/claim)는 agy transcript 스키마가 달라 **다음 증분**(미배선).
+  현재 agy 에선 PreToolUse 강제(철학 3·4) + 세션 브리프까지 작동한다.
+
 ### 경로 B — 참조 설치 (D12, 플러그인 없이)
 
 horos 한 벌만 두고, 대상 프로젝트는 *복사하지 않고* 그 중앙본을 참조한다 — 복사본은 시간이 지나면 드리프트한다(D12).
