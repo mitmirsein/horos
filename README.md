@@ -135,11 +135,12 @@ hooks/horos init ~/path/to/project                    # .horos 옵트인 마커 
 ```
 
 - PreToolUse → scope/reversibility(범위 밖 수정·파괴 명령 **차단**), PreInvocation → 규약 카드 주입.
-- Stop → decision + claim 게이트(D25): pre-tool 이 변경 파일을 세션별로 누적하고, Stop 때 그걸로
-  합성 transcript 를 만들어 참조무결성·claim 감사를 판정한다(broken → 멈춤 차단=`{"decision":"continue"}`).
+- Stop → finish + decision + claim(D25/D26): pre-tool 이 변경 파일을 누적하고 agy transcript 에서
+  마지막 프로즈·tool_seen 을 읽어 합성 transcript 를 만들어 세 게이트를 판정(broken/약속/근거없는완료 →
+  멈춤 차단=`{"decision":"continue"}`).
 - 판정 포맷 차이(agy `{"decision":"deny"}` · 무의견=무출력, D24)는 어댑터가 흡수한다.
-- **한계**: finish-the-work(철학 5)만 미배선 — agy 의 Stop 페이로드에 마지막 응답 텍스트가 없어 약속/완료
-  선언 판정을 못 한다. 현재 agy 에선 철학 2·3·4 + 감사층 claim + 세션 브리프가 작동한다.
+- **agy 에서 5철학 전부 강제된다** — Claude Code 와 동등한 강제층. 유일 agy-결합 파일은 `agy-adapter.sh`,
+  판사(scope/reversibility/finish/decision/claim)는 한 줄도 안 고친다.
 
 ### 경로 B — 참조 설치 (D12, 플러그인 없이)
 
