@@ -20,7 +20,9 @@ case "$fp" in *"/.horos/"*|*"/.horos"|*"/decisions.jsonl") pass ;; esac
 SCOPE="$HOROS_STATE/scope.json"
 if [ ! -f "$SCOPE" ]; then pass; fi
 
-verdict="$(HOROS_ROOT="$HOROS_ROOT" HOROS_FP="$fp" HOROS_SCOPE="$SCOPE" python3 - <<'PY'
+# D16: match the Stop guards — a judge crash must fail-open (a scope-guard bug denying every edit
+# is worse than an unenforced boundary), not leak a traceback to the PreToolUse stderr.
+verdict="$(HOROS_ROOT="$HOROS_ROOT" HOROS_FP="$fp" HOROS_SCOPE="$SCOPE" python3 - 2>/dev/null <<'PY'
 import json, os, fnmatch
 root = os.environ["HOROS_ROOT"].rstrip('/')
 fp = os.environ["HOROS_FP"]
@@ -43,8 +45,10 @@ ok = any(match(rel, p) for p in allow)
 # 4th field = space-joined allow, so bash can build a filled /scope widening example (D15)
 print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + " ".join(allow))
 PY
-)"
+)" || { log_event HOROS-TEL-PYFAIL scope-guard; pass; }
 
+# empty verdict (judge crashed under 2>/dev/null) -> fail-open, not fail-closed deny (D16)
+if [ -z "$verdict" ]; then log_event HOROS-TEL-PYFAIL scope-guard; pass; fi
 if [ "${verdict%%	*}" = OK ]; then pass; fi
 rel="$(printf '%s' "$verdict" | cut -f2)"
 allow="$(printf '%s' "$verdict" | cut -f3)"

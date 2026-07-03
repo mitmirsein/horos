@@ -307,6 +307,10 @@ expect "init: marker + default mode warn" "warn" "$(cat "$PLGP/.horos/mode")"
 expect "init: .horos gitignored" ".horos/" "$(cat "$PLGP/.gitignore")"
 "$HOOKS/horos" init "$PLGP" >/dev/null
 expect "init: idempotent (gitignore one line)" "1" "$(grep -cxF '.horos/' "$PLGP/.gitignore" || true)"
+GIP="$TMP/gitignore-nonl"; mkdir -p "$GIP"; printf 'node_modules' > "$GIP/.gitignore"   # no trailing newline
+"$HOOKS/horos" init "$GIP" >/dev/null
+expect "init: no line-join onto newline-less .gitignore (D14)" "1" "$(grep -cxF 'node_modules' "$GIP/.gitignore" || true)"
+expect "init: .horos on its own line" "1" "$(grep -cxF '.horos/' "$GIP/.gitignore" || true)"
 expect "plugin: session-start delegates brief (empty ledger -> D1)" "horos decide D1" "$(printf '{}' | CLAUDE_PROJECT_DIR="$PLGP" "$PD" session-start)"
 CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" scope set 'src/**' >/dev/null
 CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" mode block >/dev/null

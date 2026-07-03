@@ -341,6 +341,9 @@ PY
     [ -f "$target/.horos/mode" ] || printf 'warn\n' > "$target/.horos/mode"
     gi="$target/.gitignore"
     if ! grep -qxF '.horos/' "$gi" 2>/dev/null; then
+      # D14: don't line-join onto a .gitignore that lacks a trailing newline (install had this
+      # guard; init did not). tail -c1 is empty iff the file already ends in a newline.
+      [ -s "$gi" ] && [ -n "$(tail -c1 "$gi" 2>/dev/null)" ] && printf '\n' >> "$gi"
       { echo "# horos runtime state (machine-local)"; echo ".horos/"; } >> "$gi"
     fi
     echo "initialized horos activation marker -> $target/.horos (mode=warn, gitignored)"
