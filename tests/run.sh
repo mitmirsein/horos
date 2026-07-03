@@ -393,12 +393,36 @@ expect_empty "agy: no .horos -> silent (opt-in)" "$(printf '{"toolCall":{"name":
 expect "agy: session-start injects protocol card" "injectSteps" "$(printf '{"workspacePaths":["%s"]}' "$AP" | "$AD" session-start)"
 expect "agy: injected card carries mode" "mode=" "$(printf '{"workspacePaths":["%s"]}' "$AP" | "$AD" session-start)"
 expect "agy: no .horos session-start -> empty injectSteps" '{"injectSteps":[]}' "$(printf '{"workspacePaths":["%s"]}' "$NOAP" | "$AD" session-start)"
+# D25 Stop-tier: pre-tool accumulates changed files; stop judges them via decision + claim gates
+{ printf '%s\n' '{"id":"D1","why":"w","cost":"c","escape":"e"}'; } > "$AP/decisions.jsonl"
+agystop(){ printf '{"conversationId":"%s","terminationReason":"model_stop","workspacePaths":["%s"]}' "$1" "$AP"; }
+# accumulation: an allowed in-scope write is recorded under its conversationId
+printf '%s\n' 'def a(): return 1' > "$AP/src/acc.py"
+printf '{"toolCall":{"name":"write_file","args":{"AbsolutePath":"%s/src/acc.py"}},"conversationId":"cX","workspacePaths":["%s"]}' "$AP" "$AP" | "$AD" pre-tool >/dev/null
+expect "agy stop: allowed write is accumulated" "src/acc.py" "$(cat "$AP/.horos/agy_changed.cX" 2>/dev/null)"
+# a DENIED (out-of-scope) write is NOT accumulated
+printf '{"toolCall":{"name":"write_file","args":{"AbsolutePath":"%s/nope.py"}},"conversationId":"cX","workspacePaths":["%s"]}' "$AP" "$AP" | "$AD" pre-tool >/dev/null
+expect_empty "agy stop: denied write not accumulated" "$(grep -F 'nope.py' "$AP/.horos/agy_changed.cX" 2>/dev/null || true)"
+# broken D-ref in an accumulated file -> stop returns agy continue (blocks the stop)
+{ echo 'def b():'; echo '    return 1  # D77 undefined'; } > "$AP/src/br.py"
+printf '%s\n' "$AP/src/br.py" > "$AP/.horos/agy_changed.cBR"
+rm -f "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect "agy stop: broken D-ref -> continue (block stop)" '"decision": "continue"' "$(agystop cBR | "$AD" stop)"
+expect "agy stop: continue reason carries code" "HOROS-DEC-BROKEN" "$(agystop cBR | "$AD" stop)"
+# a trivial clean change -> no block, stop allowed (silent)
+printf '%s\n' 'x=1' > "$AP/src/ok.py"
+printf '%s\n' "$AP/src/ok.py" > "$AP/.horos/agy_changed.cOK"
+rm -f "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect_empty "agy stop: trivial clean change -> allow stop" "$(agystop cOK | "$AD" stop)"
+# no accumulation for a conversation -> stop allowed
+expect_empty "agy stop: nothing accumulated -> allow stop" "$(agystop cNONE | "$AD" stop)"
 # install --harness agy: portable .agents/hooks.json, idempotent
 AGYT="$TMP/agyinstall"; mkdir -p "$AGYT"
 "$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1
 AGYCFG="$(cat "$AGYT/.agents/hooks.json" 2>/dev/null)"
 expect "install --harness agy: writes .agents/hooks.json" "agy-adapter.sh" "$AGYCFG"
 expect "install --harness agy: routes pre-tool + session-start" "session-start" "$AGYCFG"
+expect "install --harness agy: wires Stop tier (D25)" '" stop"' "$AGYCFG"
 expect "install --harness agy: portable \$HOME path" '$HOME/' "$AGYCFG"
 expect "install --harness agy: .horos gitignored" ".horos/" "$(cat "$AGYT/.gitignore")"
 "$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1

@@ -7,6 +7,13 @@
 # byte-for-byte unchanged (their 130+ tests stay the source of truth). One event arg:
 #   pre-tool       (agy PreToolUse)   -> scope-guard (file writes) | reversibility-guard (run_command)
 #   session-start  (agy PreInvocation)-> session-brief, injected as an ephemeral message
+#   stop           (agy Stop)         -> decision-guard + claim-guard (D25)
+#
+# Stop-tier design (D25): agy's transcript schema differs from Claude's, so instead of parsing it,
+# pre-tool ACCUMULATES each written file into .horos/agy_changed.<convId>; on stop the adapter
+# synthesizes a Claude-shaped transcript from those paths (disk content as new_string) and runs the
+# decision/claim gates against it. finish-the-work needs the last assistant text, which agy's Stop
+# payload does not carry — deferred.
 #
 # agy contract (builtin skills/agy-customizations/docs/hooks.md, verified live 2026-07-03):
 #   INPUT  (stdin, camelCase): { toolCall:{name,args}, conversationId, workspacePaths,
@@ -82,6 +89,10 @@ elif name in MUTATE or (name.endswith("_file") and name not in ("view_file", "re
     fp = first(["AbsolutePath", "TargetFile", "FilePath", "Path", "file_path", "NotebookPath"])
     print("scope-guard.sh")
     print(json.dumps({"tool_name": "Write", "tool_input": {"file_path": fp}}, ensure_ascii=False))
+    print(fp)  # line3: the path, for D25 changed-file accumulation
+    import re as _re
+    print(_re.sub(r"[^A-Za-z0-9._-]", "", str(d.get("conversationId") or "default")))  # line4: safe convId
+    raise SystemExit
 else:
     print("")  # view_file/list_dir/search_web/etc. — not gated
     print("")
@@ -91,6 +102,14 @@ PY
     cinput="$(printf '%s' "$plan" | sed -n '2p')"
     [ -n "$guard" ] || noop                            # not a gated tool -> no opinion
     verdict="$(printf '%s' "$cinput" | CLAUDE_PROJECT_DIR="$root" "$HERE/$guard" 2>/dev/null || true)"
+    # D25: record a written file as "changed this session" unless horos denied it (write won't happen)
+    if [ "$guard" = scope-guard.sh ]; then
+      fpath="$(printf '%s' "$plan" | sed -n '3p')"
+      conv="$(printf '%s' "$plan" | sed -n '4p')"; [ -n "$conv" ] || conv=default
+      case "$verdict" in *'"permissionDecision": "deny"'*) : ;;
+        *) [ -n "$fpath" ] && printf '%s\n' "$fpath" >> "$root/.horos/agy_changed.$conv" 2>/dev/null || true ;;
+      esac
+    fi
     # translate the guard's Claude-shaped verdict -> agy PreToolUse decision (silence = no opinion)
     out="$(HB_V="$verdict" python3 - <<'PY' 2>/dev/null || true
 import os, json
@@ -106,6 +125,58 @@ elif "systemMessage" in o:                             # warn tier: allow but su
 PY
 )"
     [ -n "$out" ] && printf '%s\n' "$out"              # silent on pass
+    exit 0 ;;
+
+  stop)
+    # D25: judge the session's accumulated changes with the decision + claim gates. Synthesize a
+    # Claude-shaped transcript from .horos/agy_changed.<convId> (disk content as new_string).
+    conv="$(HB_IN="$input" python3 - <<'PY' 2>/dev/null || true
+import os, json, re
+try: d = json.loads(os.environ.get("HB_IN") or "{}")
+except Exception: d = {}
+print(re.sub(r"[^A-Za-z0-9._-]", "", str(d.get("conversationId") or "default")))
+PY
+)"
+    [ -n "$conv" ] || conv=default
+    acc="$root/.horos/agy_changed.$conv"
+    [ -f "$acc" ] || noop                              # nothing recorded -> allow stop
+    tf="$(mktemp)"; trap 'rm -f "$tf"' EXIT
+    HB_ACC="$acc" HB_ROOT="$root" python3 - > "$tf" <<'PY' 2>/dev/null || noop
+import os, json
+root = os.environ["HB_ROOT"].rstrip("/")
+seen = set()
+for line in open(os.environ["HB_ACC"]):
+    p = line.strip()
+    if not p or p in seen: continue
+    seen.add(p)
+    disk = p if os.path.isabs(p) else os.path.join(root, p)
+    try:
+        with open(disk) as fh: content = fh.read()
+    except OSError:
+        continue                                        # file gone -> not a live change
+    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Write", "input": {"file_path": p, "new_string": content}}]}},
+        ensure_ascii=False))
+PY
+    [ -s "$tf" ] || noop                               # no live changed files -> allow stop
+    sin="$(printf '{"session_id":"%s","transcript_path":"%s"}' "$conv" "$tf")"
+    v1="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/decision-guard.sh" 2>/dev/null || true)"
+    v2="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/claim-guard.sh" 2>/dev/null || true)"
+    # any block -> agy continue (re-enter loop) with the merged reason; warn is advisory (dropped)
+    out="$(HB_V1="$v1" HB_V2="$v2" python3 - <<'PY' 2>/dev/null || true
+import os, json
+reasons = []
+for k in ("HB_V1", "HB_V2"):
+    v = os.environ.get(k) or ""
+    try: o = json.loads(v) if v.strip() else {}
+    except Exception: o = {}
+    if o.get("decision") == "block":
+        reasons.append(o.get("reason", ""))
+if reasons:
+    print(json.dumps({"decision": "continue", "reason": " | ".join(r for r in reasons if r)}, ensure_ascii=False))
+PY
+)"
+    [ -n "$out" ] && printf '%s\n' "$out"              # silent = allow stop
     exit 0 ;;
 
   *) noop ;;

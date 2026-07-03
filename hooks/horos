@@ -287,7 +287,9 @@ block = {"horos": {
     "PreToolUse": [{"matcher": "*", "hooks": [
         {"type": "command", "command": adapter + " pre-tool", "timeout": 15}]}],
     "PreInvocation": [
-        {"type": "command", "command": adapter + " session-start", "timeout": 10}]}}
+        {"type": "command", "command": adapter + " session-start", "timeout": 10}],
+    "Stop": [                                # D25: decision + claim gates on the session's changes
+        {"type": "command", "command": adapter + " stop", "timeout": 20}]}}
 cfgdir = os.path.join(target, ".agents"); os.makedirs(cfgdir, exist_ok=True)
 cfgpath = os.path.join(cfgdir, "hooks.json")
 cfg = {}
@@ -305,11 +307,11 @@ if ".horos/" not in lines:
         f.write(("\n" if (lines and lines[-1] != "") else "") + "# horos runtime state (machine-local)\n.horos/\n")
 print("installed horos (agy, by reference) -> %s/.agents/hooks.json" % target)
 print("  central adapter: %s" % (("$HOME/" + rel) if portable else src) + "/hooks/agy-adapter.sh")
-print("  events         : PreToolUse (scope + reversibility) + PreInvocation (protocol brief)")
+print("  events         : PreToolUse (scope + reversibility) + PreInvocation (brief) + Stop (decision + claim)")
 print("  activate       : horos init %s   (creates .horos opt-in marker; mode starts warn)" % target)
 if not portable:
     print("  WARNING: central horos is not under $HOME — wrote an absolute path (may not resolve on another machine)")
-print("  note           : Stop-tier gates (finish/decision/claim) are the next agy increment; not wired yet")
+print("  note           : finish-the-work (philosophy 5) needs the last message text, absent in agy's Stop payload — deferred")
 PY
       exit 0
     fi
