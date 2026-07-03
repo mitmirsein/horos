@@ -7,13 +7,13 @@
 # byte-for-byte unchanged (their 130+ tests stay the source of truth). One event arg:
 #   pre-tool       (agy PreToolUse)   -> scope-guard (file writes) | reversibility-guard (run_command)
 #   session-start  (agy PreInvocation)-> session-brief, injected as an ephemeral message
-#   stop           (agy Stop)         -> decision-guard + claim-guard (D25)
+#   stop           (agy Stop)         -> finish-the-work + decision-guard + claim-guard (D25/D26)
 #
-# Stop-tier design (D25): agy's transcript schema differs from Claude's, so instead of parsing it,
-# pre-tool ACCUMULATES each written file into .horos/agy_changed.<convId>; on stop the adapter
-# synthesizes a Claude-shaped transcript from those paths (disk content as new_string) and runs the
-# decision/claim gates against it. finish-the-work needs the last assistant text, which agy's Stop
-# payload does not carry — deferred.
+# Stop-tier design (D25/D26): agy's transcript schema differs from Claude's, so the adapter
+# synthesizes ONE Claude-shaped transcript at stop from two sources: (a) files pre-tool ACCUMULATED
+# into .horos/agy_changed.<convId> (disk content as new_string) for decision/claim; (b) the last
+# assistant prose + tool_seen + ended-on-tool read from agy's real transcript (transcriptPath) for
+# finish-the-work (D26). All three judges then run byte-for-byte unchanged.
 #
 # agy contract (builtin skills/agy-customizations/docs/hooks.md, verified live 2026-07-03):
 #   INPUT  (stdin, camelCase): { toolCall:{name,args}, conversationId, workspacePaths,
@@ -128,8 +128,10 @@ PY
     exit 0 ;;
 
   stop)
-    # D25: judge the session's accumulated changes with the decision + claim gates. Synthesize a
-    # Claude-shaped transcript from .horos/agy_changed.<convId> (disk content as new_string).
+    # D25/D26: judge the session at stop. Synthesize ONE Claude transcript that serves all three
+    # Stop gates: (a) accumulated changed files (.horos/agy_changed.<convId>, disk content as
+    # new_string) for decision/claim; (b) the last assistant text + tool_seen + ended-on-tool read
+    # from agy's real transcript (transcriptPath) for finish-the-work (D26). Judges run unchanged.
     conv="$(HB_IN="$input" python3 - <<'PY' 2>/dev/null || true
 import os, json, re
 try: d = json.loads(os.environ.get("HB_IN") or "{}")
@@ -138,35 +140,78 @@ print(re.sub(r"[^A-Za-z0-9._-]", "", str(d.get("conversationId") or "default")))
 PY
 )"
     [ -n "$conv" ] || conv=default
+    tp="$(HB_IN="$input" python3 - <<'PY' 2>/dev/null || true
+import os, json
+try: d = json.loads(os.environ.get("HB_IN") or "{}")
+except Exception: d = {}
+print(str(d.get("transcriptPath") or ""))
+PY
+)"
     acc="$root/.horos/agy_changed.$conv"
-    [ -f "$acc" ] || noop                              # nothing recorded -> allow stop
     tf="$(mktemp)"; trap 'rm -f "$tf"' EXIT
-    HB_ACC="$acc" HB_ROOT="$root" python3 - > "$tf" <<'PY' 2>/dev/null || noop
+    HB_ACC="$acc" HB_ROOT="$root" HB_TP="$tp" python3 - > "$tf" <<'PY' 2>/dev/null || noop
 import os, json
 root = os.environ["HB_ROOT"].rstrip("/")
-seen = set()
-for line in open(os.environ["HB_ACC"]):
-    p = line.strip()
-    if not p or p in seen: continue
-    seen.add(p)
+# (a) accumulated changed files -> Write tool_use lines (decision/claim)
+changed = []
+try:
+    seen = set()
+    for line in open(os.environ["HB_ACC"]):
+        p = line.strip()
+        if p and p not in seen:
+            seen.add(p); changed.append(p)
+except OSError:
+    pass
+# (b) agy transcript -> last assistant text, tool_seen, ended_on_tool (finish-the-work, D26)
+NON_TOOL = {"PLANNER_RESPONSE", "USER_INPUT", "CONVERSATION_HISTORY", "EPHEMERAL_MESSAGE",
+            "ERROR_MESSAGE", "FINISH", "CHECKPOINT", "BRAIN_UPDATE"}
+last_text = ""; tool_seen = False; ended_on_tool = False
+try:
+    tlines = [json.loads(l) for l in open(os.environ["HB_TP"]) if l.strip()]
+except (OSError, ValueError):
+    tlines = []
+for o in tlines:
+    if o.get("tool_calls"): tool_seen = True
+    elif o.get("source") == "MODEL" and o.get("type") not in NON_TOOL: tool_seen = True
+for o in reversed(tlines):                              # last model prose = final text
+    if o.get("type") == "PLANNER_RESPONSE" and isinstance(o.get("content"), str) and o["content"].strip():
+        last_text = o["content"]; break
+for o in reversed(tlines):                              # did the turn end on a tool step?
+    if o.get("source") != "MODEL": continue
+    t = o.get("type")
+    ended_on_tool = bool(o.get("tool_calls")) or (t not in NON_TOOL)
+    break
+out = []
+for p in changed:
     disk = p if os.path.isabs(p) else os.path.join(root, p)
     try:
         with open(disk) as fh: content = fh.read()
     except OSError:
-        continue                                        # file gone -> not a live change
-    print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
-        {"type": "tool_use", "name": "Write", "input": {"file_path": p, "new_string": content}}]}},
-        ensure_ascii=False))
+        continue
+    out.append({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Write", "input": {"file_path": p, "new_string": content}}]}})
+if tool_seen and not out:                               # read-only session: mark tool_seen so a bare
+    out.append({"type": "assistant", "message": {"role": "assistant", "content": [  # completion claim
+        {"type": "tool_use", "name": "Read", "input": {}}]}})                        # isn't a false CLAIM
+if ended_on_tool:                                       # ended on action -> finish PASS
+    out.append({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Read", "input": {}}]}})
+elif last_text:                                         # ended on prose -> finish checks promise/claim
+    out.append({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": last_text}]}})
+for o in out:
+    print(json.dumps(o, ensure_ascii=False))
 PY
-    [ -s "$tf" ] || noop                               # no live changed files -> allow stop
+    [ -s "$tf" ] || noop                               # nothing to judge -> allow stop
     sin="$(printf '{"session_id":"%s","transcript_path":"%s"}' "$conv" "$tf")"
-    v1="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/decision-guard.sh" 2>/dev/null || true)"
-    v2="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/claim-guard.sh" 2>/dev/null || true)"
+    vf="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/finish-the-work.sh" 2>/dev/null || true)"
+    vd="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/decision-guard.sh" 2>/dev/null || true)"
+    vc="$(printf '%s' "$sin" | CLAUDE_PROJECT_DIR="$root" "$HERE/claim-guard.sh" 2>/dev/null || true)"
     # any block -> agy continue (re-enter loop) with the merged reason; warn is advisory (dropped)
-    out="$(HB_V1="$v1" HB_V2="$v2" python3 - <<'PY' 2>/dev/null || true
+    out="$(HB_VF="$vf" HB_VD="$vd" HB_VC="$vc" python3 - <<'PY' 2>/dev/null || true
 import os, json
 reasons = []
-for k in ("HB_V1", "HB_V2"):
+for k in ("HB_VF", "HB_VD", "HB_VC"):
     v = os.environ.get(k) or ""
     try: o = json.loads(v) if v.strip() else {}
     except Exception: o = {}

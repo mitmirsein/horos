@@ -416,6 +416,18 @@ rm -f "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
 expect_empty "agy stop: trivial clean change -> allow stop" "$(agystop cOK | "$AD" stop)"
 # no accumulation for a conversation -> stop allowed
 expect_empty "agy stop: nothing accumulated -> allow stop" "$(agystop cNONE | "$AD" stop)"
+# D26 finish-the-work in agy: read the last assistant prose + tool_seen from agy's transcriptPath
+agytp(){ printf '{"conversationId":"%s","terminationReason":"model_stop","workspacePaths":["%s"],"transcriptPath":"%s"}' "$1" "$AP" "$2"; }
+python3 -c 'import json;[print(json.dumps(l,ensure_ascii=False)) for l in [{"type":"PLANNER_RESPONSE","source":"MODEL","content":None,"tool_calls":[{"name":"view_file"}]},{"type":"VIEW_FILE","source":"MODEL","content":"x"},{"type":"PLANNER_RESPONSE","source":"MODEL","content":"이제 테스트를 추가하겠습니다."}]]' > "$AP/.horos/tp_promise.jsonl"
+rm -f "$AP/.horos/stop_guard" "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect "agy finish: promise-only stop -> continue" '"decision": "continue"' "$(agytp cFP "$AP/.horos/tp_promise.jsonl" | "$AD" stop)"
+expect "agy finish: promise code" "HOROS-FIN-PROMISE" "$(agytp cFP "$AP/.horos/tp_promise.jsonl" | "$AD" stop)"
+python3 -c 'import json;print(json.dumps({"type":"PLANNER_RESPONSE","source":"MODEL","content":"완료했습니다. 다 됐습니다."},ensure_ascii=False))' > "$AP/.horos/tp_claim.jsonl"
+rm -f "$AP/.horos/stop_guard" "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect "agy finish: zero-tool completion claim -> continue" "HOROS-FIN-NOEVIDENCE" "$(agytp cFC "$AP/.horos/tp_claim.jsonl" | "$AD" stop)"
+python3 -c 'import json;[print(json.dumps(l,ensure_ascii=False)) for l in [{"type":"PLANNER_RESPONSE","source":"MODEL","content":None,"tool_calls":[{"name":"run_command"}]},{"type":"RUN_COMMAND","source":"MODEL","content":"ok"},{"type":"PLANNER_RESPONSE","source":"MODEL","content":"작업을 마쳤고 테스트도 통과했습니다."}]]' > "$AP/.horos/tp_clean.jsonl"
+rm -f "$AP/.horos/stop_guard" "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect_empty "agy finish: tool-used completion -> allow stop" "$(agytp cFOK "$AP/.horos/tp_clean.jsonl" | "$AD" stop)"
 # install --harness agy: portable .agents/hooks.json, idempotent
 AGYT="$TMP/agyinstall"; mkdir -p "$AGYT"
 "$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1
