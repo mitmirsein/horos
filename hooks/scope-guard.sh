@@ -42,8 +42,13 @@ def match(rel, pat):
     base = pat.rstrip('*').rstrip('/')      # treat "dir/" or "dir/**" as a prefix
     return bool(base) and (rel == base or rel.startswith(base + '/'))
 ok = any(match(rel, p) for p in allow)
-# 4th field = space-joined allow, so bash can build a filled /scope widening example (D15)
-print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + " ".join(allow))
+# 4th field = the filled /scope example. Quote ONLY tokens that actually contain whitespace (or a
+# quote), so a whitespace glob stays one argument when copy-pasted, while clean globs like hooks/**
+# are left verbatim (over-quoting `**` would be noise for the slash command). # D15
+def q(x):
+    return "'" + x.replace("'", "'\\''") + "'" if (any(c.isspace() for c in x) or "'" in x) else x
+example = " ".join(q(x) for x in (list(allow) + [rel]))
+print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + example)
 PY
 )" || { log_event HOROS-TEL-PYFAIL scope-guard; pass; }
 
@@ -52,6 +57,6 @@ if [ -z "$verdict" ]; then log_event HOROS-TEL-PYFAIL scope-guard; pass; fi
 if [ "${verdict%%	*}" = OK ]; then pass; fi
 rel="$(printf '%s' "$verdict" | cut -f2)"
 allow="$(printf '%s' "$verdict" | cut -f3)"
-allow_sp="$(printf '%s' "$verdict" | cut -f4)"
+example="$(printf '%s' "$verdict" | cut -f4)"   # shlex-quoted allow globs + rel (D15)
 enforce_pretool HOROS-SCOPE-OUT "scope" "$rel" \
-  "범위 밖 수정: '$rel' 은 선언된 scope에 없음 (allow: $allow). 의도한 확장이면 경계를 넓힌 뒤 재시도하고, 아니면 범위 안에서 작업하세요. Action: edit only inside the declared scope, or widen it first and retry. 예: /scope $allow_sp $rel"
+  "범위 밖 수정: '$rel' 은 선언된 scope에 없음 (allow: $allow). 의도한 확장이면 경계를 넓힌 뒤 재시도하고, 아니면 범위 안에서 작업하세요. Action: edit only inside the declared scope, or widen it first and retry. 예: /scope $example"

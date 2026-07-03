@@ -96,40 +96,45 @@ drain_tel() {
   printf '%s' "$last"
 }
 
-# warn: human-facing notice only, action proceeds
+# D22: emit as UTF-8 BYTES via stdout.buffer, not print(). ensure_ascii=False keeps the JSON
+# human-readable (Korean), but print() encodes with the locale's stdout encoding — under a
+# non-UTF-8 locale (LC_ALL=C, PYTHONIOENCODING=ascii) it raises UnicodeEncodeError, and since
+# the emitter runs in a guard's `set -e` then-branch, that crash aborts the guard BEFORE its
+# verdict is written: block/strict then silently fail-OPEN (PreToolUse exit 1 ≠ 2 = proceed;
+# Stop just ends) with a traceback leaked to stderr. Writing bytes is encoding-independent.
 warn_emit() { # message
   HOROS_MSG="$1" python3 - <<'PY'
-import json, os
-print(json.dumps({"systemMessage": "[horos:warn] " + os.environ["HOROS_MSG"]}, ensure_ascii=False))
+import json, os, sys
+sys.stdout.buffer.write((json.dumps({"systemMessage": "[horos:warn] " + os.environ["HOROS_MSG"]}, ensure_ascii=False) + "\n").encode("utf-8"))
 PY
 }
 
 # block for a PreToolUse hook (deny the tool call)
 deny_pretool() { # reason
   HOROS_MSG="$1" python3 - <<'PY'
-import json, os
-print(json.dumps({"hookSpecificOutput": {
+import json, os, sys
+sys.stdout.buffer.write((json.dumps({"hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "[horos:block] " + os.environ["HOROS_MSG"]}}, ensure_ascii=False))
+    "permissionDecisionReason": "[horos:block] " + os.environ["HOROS_MSG"]}}, ensure_ascii=False) + "\n").encode("utf-8"))
 PY
 }
 
 # block for a Stop hook (prevent the stop, continue the turn)
 block_stop() { # reason
   HOROS_MSG="$1" python3 - <<'PY'
-import json, os
-print(json.dumps({"decision": "block", "reason": "[horos:block] " + os.environ["HOROS_MSG"]}, ensure_ascii=False))
+import json, os, sys
+sys.stdout.buffer.write((json.dumps({"decision": "block", "reason": "[horos:block] " + os.environ["HOROS_MSG"]}, ensure_ascii=False) + "\n").encode("utf-8"))
 PY
 }
 
 # inject non-blocking context (UserPromptSubmit etc.)
 inject_context() { # event text
   HOROS_EV="$1" HOROS_MSG="$2" python3 - <<'PY'
-import json, os
-print(json.dumps({"hookSpecificOutput": {
+import json, os, sys
+sys.stdout.buffer.write((json.dumps({"hookSpecificOutput": {
     "hookEventName": os.environ["HOROS_EV"],
-    "additionalContext": os.environ["HOROS_MSG"]}}, ensure_ascii=False))
+    "additionalContext": os.environ["HOROS_MSG"]}}, ensure_ascii=False) + "\n").encode("utf-8"))
 PY
 }
 

@@ -158,10 +158,12 @@ case "${verdict%%	*}" in
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
     if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-CLM-BROKEN "claim/structural" "$detail" \
-      "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. Action: fix the claim (or externalize the missing ref first) and redeposit. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added  (이 게이트는 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
+      "떨궈진 claim 이 구조 검사를 통과하지 못했습니다: ${detail}. Action: fix the claim (or externalize the missing ref first) and redeposit. 예: horos claim completion \"<한 일>\" \"${fcsv}\"  (테스트를 실제로 추가했을 때만 끝에 tests_added 를 붙여라. 이 게이트는 형식·신선·일관만 보장하며 의미 진리는 보장하지 않습니다.)" ;;
   MISSING)
     fcsv="$(printf '%s' "$verdict" | cut -f2)"; [ -n "$fcsv" ] || fcsv="<files,csv>"
-    msg="유의미한 코드 변경에 이를 덮는 claim 이 없습니다. Action: deposit a verifiable claim covering the changed files. 예: horos claim completion \"<한 일>\" \"${fcsv}\" \"\" tests_added"
+    # 예 omits tests_added on purpose: copying it verbatim must not self-defeat into CLM-BROKEN
+    # when no test file is in evidence (add tests_added only when you actually added a test). # D15
+    msg="유의미한 코드 변경에 이를 덮는 claim 이 없습니다. Action: deposit a verifiable claim covering the changed files. 예: horos claim completion \"<한 일>\" \"${fcsv}\"  (테스트 추가 시에만 끝에 tests_added)"
     if [ "$(horos_mode)" = strict ]; then          # D18: strict promotes coverage-MISSING to a block
       n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
       if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "claim:$sid"; fi

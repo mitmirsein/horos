@@ -79,7 +79,7 @@ case "$verdict" in
     n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
     if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
     enforce_stop HOROS-FIN-NOEVIDENCE "finish/claim" "completion-without-evidence" \
-      "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. Action: run the verification with tools and report its output before claiming done. 예: bash tests/run.sh" ;;
+      "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. Action: run THIS project's verification (its tests / build / typecheck) with tools and report the output before claiming done." ;;
   *)
     printf '%s 0\n' "$sid" > "$GUARD"
     pass ;;

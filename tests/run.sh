@@ -157,6 +157,9 @@ echo "== D15: message contract — [horos:*] <CODE> <ko>. Action: <en>. 예: <fi
 mode warn
 expect "scope OUT: code present" "HOROS-SCOPE-OUT" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
 expect "scope OUT: filled /scope widening example" "/scope hooks/** README.md secret.txt" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
+"$HOOKS/horos" scope set 'src/**' 'a b.md' >/dev/null   # a glob WITH whitespace
+expect "scope OUT: whitespace glob stays one quoted arg in example" "'a b.md'" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
+"$HOOKS/horos" scope set 'hooks/**' 'README.md' >/dev/null   # restore for later sections
 expect "reversibility: code present" "HOROS-REV-DESTRUCT" "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}')"
 mode warn; reset_guard
 expect "finish PROMISE: code present" "HOROS-FIN-PROMISE" "$(fin sm1 "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
@@ -293,7 +296,8 @@ expect_empty "install: old copy-style entry migrated away" "$(printf '%s' "$S2" 
 expect "install: .horos gitignored in target"        ".horos/"         "$(cat "$PROJ/.gitignore")"
 "$HOOKS/horos" install "$PROJ" >/dev/null 2>&1        # re-run: must stay idempotent
 expect "install: idempotent (scope-guard one line)"  "1" "$(grep -cF 'scope-guard.sh' "$PROJ/.claude/settings.json")"
-expect "doctor [target]: referenced hook resolves OK" "scope-guard" "$("$HOOKS/horos" doctor "$PROJ")"
+expect "doctor [target]: referenced hook resolves OK" "[OK] scope-guard" "$("$HOOKS/horos" doctor "$PROJ")"
+expect_empty "doctor [target]: no hook reported MISS" "$("$HOOKS/horos" doctor "$PROJ" | grep -F '[MISS]' || true)"
 expect "doctor: central version stamp" "vers : $(cat "$HOOKS/../VERSION")" "$("$HOOKS/horos" doctor "$PROJ")"
 expect "doctor: missing VERSION -> unknown (copied CLI)" "vers : unknown" "$("$TMP/hooks/horos" doctor "$PROJ")"
 
@@ -301,6 +305,15 @@ echo "== D19/D20: plugin dispatch — activation marker + local-wiring precedenc
 PD="$HOOKS/plugin-dispatch.sh"
 RROOT="$(cd "$HOOKS/.." && pwd)"
 PLGP="$TMP/plugproj"; mkdir -p "$PLGP"
+# D19 gate must be DISCRIMINATING: not just empty output, but the gate exits BEFORE lib.sh's
+# .horos auto-mkdir — so a marker-less project stays marker-less after a dispatch call.
+"$PD" pre-edit >/dev/null 2>&1 <<EOF || true
+{"tool_name":"Write","tool_input":{"file_path":"$PLGP/x.txt"}}
+EOF
+CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit >/dev/null 2>&1 <<EOF || true
+{"tool_name":"Write","tool_input":{"file_path":"$PLGP/x.txt"}}
+EOF
+expect_empty "plugin: no marker -> gate exits before .horos auto-mkdir (D19)" "$([ -d "$PLGP/.horos" ] && echo "LEAKED .horos" || true)"
 expect_empty "plugin: no .horos marker -> inert (D19)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/x.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
 "$HOOKS/horos" init "$PLGP" >/dev/null
 expect "init: marker + default mode warn" "warn" "$(cat "$PLGP/.horos/mode")"
@@ -316,11 +329,19 @@ CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" scope set 'src/**' >/dev/null
 CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" mode block >/dev/null
 expect "plugin: marker present -> delegates scope-guard (deny)" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
 expect "plugin: stop-decision delegates (broken ref blocks)" '"decision": "block"' "$(printf '{"session_id":"pg1","transcript_path":"%s"}' "$FIX/edit_code_brokenref.jsonl" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" stop-decision)"
+# each dispatch route must reach its REAL target, not just have a case label (behavioral, not static)
+expect "plugin: pre-bash delegates reversibility (rm -rf deny)" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-bash)"
+CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" mode strict >/dev/null
+expect "plugin: stop-finish delegates (promise blocks)" '"decision": "block"' "$(printf '{"session_id":"pg2","transcript_path":"%s"}' "$FIX/promise.jsonl" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" stop-finish)"
+expect "plugin: stop-claim delegates (strict coverage blocks)" '"decision": "block"' "$(printf '{"session_id":"pg3","transcript_path":"%s"}' "$FIX/edit_code_claim_uncovered.jsonl" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" stop-claim)"
+CLAUDE_PROJECT_DIR="$PLGP" "$HOOKS/horos" mode block >/dev/null
 mkdir -p "$PLGP/.claude"
-printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"x/scope-guard.sh"}]}]}}' > "$PLGP/.claude/settings.json"
+# seed BOTH a horos entry AND an unrelated one, to test D20 defer + uninstall preservation
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo keep-me-plugintest"}]},{"matcher":"Edit","hooks":[{"type":"command","command":"x/scope-guard.sh"}]}]}}' > "$PLGP/.claude/settings.json"
 expect_empty "plugin: local wiring present -> defers (D20)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.txt"}}' "$PLGP" | CLAUDE_PROJECT_DIR="$PLGP" "$PD" pre-edit)"
 "$HOOKS/horos" uninstall "$PLGP" >/dev/null
 expect_empty "uninstall: horos wiring stripped" "$(grep -F 'scope-guard.sh' "$PLGP/.claude/settings.json" || true)"
+expect "uninstall: non-horos entry preserved" "keep-me-plugintest" "$(cat "$PLGP/.claude/settings.json")"
 pchk="$TMP/plugchk.out"
 HOOKS_DIR="$HOOKS" python3 - > "$pchk" <<'PYX'
 import json, os, re
