@@ -64,6 +64,13 @@ with open(os.environ["HOROS_TP"]) as f:
             for e in inp.get("edits", []) or []:
                 blob += "\n" + str(e.get("new_string", ""))
             new_lines += blob.count("\n")
+# D21: transcript file_path is ABSOLUTE, but claim.evidence_files are ROOT-relative (CLI convention).
+# Comparing the two sets directly was always empty in production -> every fresh covering claim was
+# invisible: the audit tier's coverage falsely warned AND its structural (BROKEN) checks never ran.
+# D18 strict escalated that to an UNSATISFIABLE block. Normalize both sides to ROOT-relative here.
+def relpath(fp):
+    return fp[len(ROOT) + 1:] if (ROOT and fp.startswith(ROOT + '/')) else fp
+changed = {relpath(f) for f in changed}
 if not changed:
     print("PASS"); raise SystemExit
 
@@ -101,7 +108,7 @@ def fresh(c):                                  # all bound files still match the
     return bool(binds) and all(filehash(f) == h for f, h in binds.items())
 
 # 3) only FRESH claims touching this session's changes are judged (stale -> dropped, D9)
-def ev(c): return set(c.get("evidence_files") or [])
+def ev(c): return {relpath(x) for x in (c.get("evidence_files") or [])}   # D21: normalize to match `changed`
 relevant = []
 for c in claims:
     if not (ev(c) & changed): continue

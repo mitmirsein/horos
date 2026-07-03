@@ -138,6 +138,21 @@ printf 'def g(): return 999\n' > "$TMP/good.py"   # mutate bound file -> claim g
 mode block; cgd
 expect_empty "stale claim dropped (re-edit not false-blocked) -> pass" "$(fin sc6 "$FIX/edit_code_claim_good.jsonl" | "$HOOKS/claim-guard.sh")"
 
+echo "== D21: production shape — ABSOLUTE transcript path matched against ROOT-relative claim =="
+# The 3 live consumers see absolute file_path in the transcript; `horos claim` takes ROOT-relative
+# evidence_files. Pre-D21 these never intersected -> audit tier silently inert + strict deadlock.
+ABSP="$TMP/abscov"; mkdir -p "$ABSP/.horos"
+{ echo "def f():"; for i in 1 2 3 4 5 6 7 8 9 10; do echo "    x$i=$i"; done; echo "    return 1"; } > "$ABSP/mod.py"
+CLAUDE_PROJECT_DIR="$ABSP" "$HOOKS/horos" claim completion "mod.py 구현" "mod.py" >/dev/null 2>&1
+absbody="def f():$(for i in 1 2 3 4 5 6 7 8 9 10; do printf '\\n    x%d=%d' "$i" "$i"; done)\\n    return 1"
+printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/mod.py","new_string":"%s"}}]}}\n' "$ABSP" "$absbody" > "$ABSP/tp.jsonl"
+printf 'block\n' > "$ABSP/.horos/mode"
+expect_empty "abs transcript: fresh covering claim recognized (block, no false coverage warn)" "$(printf '{"session_id":"ac1","transcript_path":"%s"}' "$ABSP/tp.jsonl" | CLAUDE_PROJECT_DIR="$ABSP" "$HOOKS/claim-guard.sh")"
+printf 'strict\n' > "$ABSP/.horos/mode"
+expect_empty "abs transcript: covering claim satisfies strict (no unsatisfiable block)" "$(printf '{"session_id":"ac2","transcript_path":"%s"}' "$ABSP/tp.jsonl" | CLAUDE_PROJECT_DIR="$ABSP" "$HOOKS/claim-guard.sh")"
+rm -f "$ABSP/.horos/claims.jsonl"; printf 'strict\n' > "$ABSP/.horos/mode"
+expect "abs transcript: uncovered significant change still blocks in strict" '"decision": "block"' "$(printf '{"session_id":"ac3","transcript_path":"%s"}' "$ABSP/tp.jsonl" | CLAUDE_PROJECT_DIR="$ABSP" "$HOOKS/claim-guard.sh")"
+
 echo "== D15: message contract — [horos:*] <CODE> <ko>. Action: <en>. 예: <filled command> =="
 mode warn
 expect "scope OUT: code present" "HOROS-SCOPE-OUT" "$(call scope-guard.sh '{"tool_name":"Write","tool_input":{"file_path":"'"$TMP"'/secret.txt"}}')"
