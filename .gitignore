@@ -5,7 +5,9 @@
 # local design proposal (promote to docs/ when published)
 PROPOSAL-*.md
 
-# macOS / editor noise
+# macOS / editor / python bytecode noise
 .DS_Store
 *.swp
 *~
+__pycache__/
+*.py[cod]

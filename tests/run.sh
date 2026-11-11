@@ -5,7 +5,15 @@
 # macOS /bin/bash 3.2 a pipe's right side is a subshell and would lose the counters.
 set -uo pipefail
 HOOKS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)"
-FIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/fixtures" && pwd)"
+FIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/fixtures" 2>/dev/null && pwd || true)"
+# D32: verify required fixtures exist upfront so missing synced files never cause vacuous passes
+REQUIRED_FIXTURES="claim dual_violation edit_code_aporia_brokenref edit_code_aporia_goodref edit_code_aporia_incomplete edit_code_bigchange edit_code_brokenref edit_code_claim_badref edit_code_claim_good edit_code_claim_testlie edit_code_claim_uncovered edit_code_goodref edit_code_noref edit_code_outside_project edit_doc edit_literal edit_test_path promise question tool_end"
+for fx in $REQUIRED_FIXTURES; do
+  if [ -z "$FIX" ] || [ ! -f "$FIX/$fx.jsonl" ]; then
+    echo "FATAL: HOROS-TEST-NOFIXTURE missing fixture '$fx.jsonl' under tests/fixtures/ (check Syncthing .stignore or git checkout)" >&2
+    exit 2
+  fi
+done
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export CLAUDE_PROJECT_DIR="$TMP"
 mkdir -p "$TMP/.horos" "$TMP/hooks"
@@ -264,7 +272,7 @@ mode warn; cgd
 expect_empty "claim-guard: out-of-project file dropped -> pass" "$(fin sx2 "$FIX/edit_code_outside_project.jsonl" | "$HOOKS/claim-guard.sh")"
 
 echo "== D11: parent-bridge -> gate to horos subtree, delegate, leave other projects alone =="
-cp "$HOOKS"/*.sh "$HOOKS/horos" "$TMP/hooks/" 2>/dev/null || true
+cp "$HOOKS"/*.sh "$HOOKS"/*.py "$HOOKS/horos" "$TMP/hooks/" 2>/dev/null || true
 chmod +x "$TMP/hooks"/*.sh "$TMP/hooks/horos" 2>/dev/null || true
 BR="$TMP/hooks/parent-bridge.sh"
 "$TMP/hooks/horos" scope set 'hooks/**' 'README.md' >/dev/null 2>&1 || true
@@ -440,6 +448,152 @@ expect "install --harness agy: .horos gitignored" ".horos/" "$(cat "$AGYT/.gitig
 "$HOOKS/horos" install --harness agy "$AGYT" >/dev/null 2>&1
 expect "install --harness agy: idempotent (one horos key)" "1" "$(grep -c '"horos"' "$AGYT/.agents/hooks.json")"
 
+echo "== D27: flock session-map loop-guard (concurrent subagents + legacy migration) =="
+mode block; reset_guard
+expect "concurrent sA nudge 1 blocks" '"decision": "block"' "$(fin sA "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect "concurrent sB nudge 1 blocks (does not reset sA)" '"decision": "block"' "$(fin sB "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect "concurrent sA nudge 2 blocks" '"decision": "block"' "$(fin sA "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect_empty "concurrent sA nudge 3 silenced (threshold 2)" "$(fin sA "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect "concurrent sB nudge 2 STILL blocks (sA silence isolated)" '"decision": "block"' "$(fin sB "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+expect_empty "concurrent sB nudge 3 silenced" "$(fin sB "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+printf 'sLegacy 2\n' > "$TMP/.horos/stop_guard"
+expect_empty "legacy plain-text 'sid count' migrates + silences" "$(fin sLegacy "$FIX/promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+
+echo "== D28: Codex CLI (apply_patch + CLAUDE_PROJECT_DIR-less root + exitcode harness) =="
+CXP="$TMP/codexproj"; mkdir -p "$CXP/src" "$CXP/.horos"
+printf 'block\n' > "$CXP/.horos/mode"
+HOROS_PROJECT_DIR="$CXP" "$HOOKS/horos" scope set 'src/**' >/dev/null
+expect "codex root: payload cwd resolves without CLAUDE_PROJECT_DIR" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/outside.txt"},"cwd":"%s"}' "$CXP" "$CXP" | env -u CLAUDE_PROJECT_DIR "$HOOKS/scope-guard.sh")"
+expect "codex root: HOROS_PROJECT_DIR overrides CLAUDE_PROJECT_DIR" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/outside.txt"}}' "$CXP" | HOROS_PROJECT_DIR="$CXP" "$HOOKS/scope-guard.sh")"
+patch_bad="$(printf '*** Begin Patch\n*** Update File: %s/secret.py\n@@\n+x = 1\n*** End Patch' "$CXP")"
+patch_ok="$(printf '*** Begin Patch\n*** Add File: %s/src/new.py\n+def ok():\n+    return 1  # D1\n*** End Patch' "$CXP")"
+expect "codex apply_patch: out-of-scope file denied" '"permissionDecision": "deny"' "$(HOROS_P="$patch_bad" python3 -c 'import json,os; print(json.dumps({"tool_name":"apply_patch","tool_input":{"patch":os.environ["HOROS_P"]}}))' | HOROS_PROJECT_DIR="$CXP" "$HOOKS/scope-guard.sh")"
+expect_empty "codex apply_patch: in-scope file allowed" "$(HOROS_P="$patch_ok" python3 -c 'import json,os; print(json.dumps({"tool_name":"apply_patch","tool_input":{"patch":os.environ["HOROS_P"]}}))' | HOROS_PROJECT_DIR="$CXP" "$HOOKS/scope-guard.sh")"
+python3 - "$CXP" > "$CXP/tp_patch_bad.jsonl" <<'PY'
+import json, sys
+p = "*** Begin Patch\n*** Add File: %s/src/p.py\n+def f():\n+    return 1  # D99\n*** End Patch" % sys.argv[1]
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"apply_patch","input":{"patch":p}}]}}))
+PY
+expect "codex apply_patch: decision-guard catches broken D-ref in patch" "HOROS-DEC-BROKEN" "$(printf '{"session_id":"cx1","transcript_path":"%s","cwd":"%s"}' "$CXP/tp_patch_bad.jsonl" "$CXP" | env -u CLAUDE_PROJECT_DIR "$HOOKS/decision-guard.sh")"
+# HOROS_HARNESS=exitcode channel: stderr + exit 2 on block, stderr + exit 0 on warn
+ec_out="$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/outside.txt"}}' "$CXP" | HOROS_HARNESS=exitcode HOROS_PROJECT_DIR="$CXP" "$HOOKS/scope-guard.sh" 2>"$TMP/ec.err"; echo "RC:$?")"
+expect "exitcode harness: block exits 2 with empty stdout" "RC:2" "$ec_out"
+expect "exitcode harness: block writes HOROS code to stderr" "HOROS-SCOPE-OUT" "$(cat "$TMP/ec.err")"
+printf 'warn\n' > "$CXP/.horos/mode"
+ec_warn="$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/outside.txt"}}' "$CXP" | HOROS_HARNESS=exitcode HOROS_PROJECT_DIR="$CXP" "$HOOKS/scope-guard.sh" 2>"$TMP/ecw.err"; echo "RC:$?")"
+expect "exitcode harness: warn exits 0" "RC:0" "$ec_warn"
+expect "exitcode harness: warn writes [horos:warn] to stderr" "[horos:warn]" "$(cat "$TMP/ecw.err")"
+# install / uninstall --harness codex
+CXI="$TMP/cxinst"; mkdir -p "$CXI/.codex"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo keep-codex"}]}]}}' > "$CXI/.codex/hooks.json"
+"$HOOKS/horos" install --harness codex "$CXI" >/dev/null 2>&1
+expect "install --harness codex: writes apply_patch matcher" "apply_patch" "$(cat "$CXI/.codex/hooks.json")"
+expect "install --harness codex: preserves unrelated codex hook" "keep-codex" "$(cat "$CXI/.codex/hooks.json")"
+expect "doctor: reports codex harness" "codex" "$("$HOOKS/horos" doctor "$CXI")"
+"$HOOKS/horos" uninstall --harness codex "$CXI" >/dev/null 2>&1
+expect_empty "uninstall --harness codex: strips horos entries" "$(grep -F 'scope-guard.sh' "$CXI/.codex/hooks.json" || true)"
+expect "uninstall --harness codex: preserves non-horos entry" "keep-codex" "$(cat "$CXI/.codex/hooks.json")"
+
+echo "== D29: realpath traversal/symlink defense, segment globs (* vs **), URL-safe comments =="
+TRAV="$TMP/trav"; mkdir -p "$TRAV/hooks" "$TRAV/src/sub" "$TRAV/.horos"
+printf 'block\n' > "$TRAV/.horos/mode"
+HOROS_PROJECT_DIR="$TRAV" "$HOOKS/horos" scope set 'hooks/**' 'src/*.py' >/dev/null
+expect "scope traversal: hooks/../secret.txt denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/hooks/../secret.txt"}}' "$TRAV" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/scope-guard.sh")"
+expect "scope traversal: hooks/../../outside.py denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/hooks/../../outside.py"}}' "$TRAV" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/scope-guard.sh")"
+ln -s /etc "$TRAV/hooks/evil_etc"
+expect "scope symlink escape: hooks/evil_etc/hosts denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/hooks/evil_etc/hosts"}}' "$TRAV" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/scope-guard.sh")"
+expect_empty "segment glob: src/*.py allows single-level src/top.py" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/src/top.py"}}' "$TRAV" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/scope-guard.sh")"
+expect "segment glob: src/*.py denies nested src/sub/deep.py" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/src/sub/deep.py"}}' "$TRAV" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/scope-guard.sh")"
+# URL vs quoted comment ref extraction
+printf '%s\n' '{"id":"D1","why":"w","cost":"c","escape":"e"}' > "$TRAV/decisions.jsonl"
+python3 - "$TRAV" > "$TRAV/tp_url.jsonl" <<'PY'
+import json, sys
+code = 'url = "https://example.com/v1/D99#A88"\nx = 1  # implements \'D1\'\n'
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":sys.argv[1]+"/src/u.py","content":code}}]}}))
+PY
+expect_empty "comment parser: URL /D99#A88 ignored while # implements 'D1' recognized" "$(printf '{"session_id":"url1","transcript_path":"%s"}' "$TRAV/tp_url.jsonl" | HOROS_PROJECT_DIR="$TRAV" "$HOOKS/decision-guard.sh")"
+
+echo "== D30: reversibility subshell/git hardening + finish-the-work Korean summary precision =="
+mode block
+expect "reversibility: bash -c 'rm -rf' denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm -rf build\""}}')"
+expect "reversibility: eval 'git reset --hard' denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"eval '\''git reset --hard'\''"}}')"
+expect "reversibility: python3 -c shutil.rmtree denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import shutil; shutil.rmtree('\''dist'\'')\""}}')"
+expect_empty "reversibility: bash -c commit message with rm -rf allowed" "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"bash -c '\''git commit -m \"fix rm -rf\"'\''"}}')"
+expect "reversibility: git push -f denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git push -f origin main"}}')"
+expect_empty "reversibility: git push --force-if-includes allowed" "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git push --force-if-includes origin main"}}')"
+expect "reversibility: git checkout . denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git checkout ."}}')"
+expect "reversibility: git restore . denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git restore ."}}')"
+expect_empty "reversibility: git restore --staged allowed" "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git restore --staged a.py"}}')"
+expect "reversibility: git branch -D denied" '"permissionDecision": "deny"' "$(call reversibility-guard.sh '{"tool_name":"Bash","tool_input":{"command":"git branch -D feature"}}')"
+# finish-the-work: Korean summary noun phrase vs volitional promise
+python3 - > "$TMP/tp_ko_summary.jsonl" <<'PY'
+import json
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"pytest"}}]}}))
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"다음으로 테스트 실행 결과를 요약합니다. 모든 검증을 완료했습니다."}]}}))
+PY
+reset_guard
+expect_empty "finish-the-work: '다음으로 테스트 실행 결과를 요약합니다' allowed (not a promise)" "$(fin kos1 "$TMP/tp_ko_summary.jsonl" | "$HOOKS/finish-the-work.sh")"
+python3 - > "$TMP/tp_ko_promise.jsonl" <<'PY'
+import json
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}))
+print(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"확인했습니다. 다음으로 통합 테스트를 실행하겠습니다."}]}}))
+PY
+reset_guard
+expect "finish-the-work: '다음으로 통합 테스트를 실행하겠습니다' blocked" "HOROS-FIN-PROMISE" "$(fin kop1 "$TMP/tp_ko_promise.jsonl" | "$HOOKS/finish-the-work.sh")"
+
+echo "== D31: Antigravity 2.0 SessionStart + nested systemMessage + terminationReason + exact lines =="
+expect "install --harness agy: wires SessionStart (not PreInvocation)" '"SessionStart"' "$AGYCFG"
+expect_empty "install --harness agy: no legacy PreInvocation" "$(printf '%s' "$AGYCFG" | grep -F 'PreInvocation' || true)"
+agy_ss="$(printf '{"workspacePaths":["%s"]}' "$AP" | "$AD" session-start)"
+expect "agy session-start: nested systemMessage schema" '"systemMessage": {' "$agy_ss"
+expect_empty "agy session-start: no deprecated ephemeralMessage" "$(printf '%s' "$agy_ss" | grep -F 'ephemeralMessage' || true)"
+# terminationReason abort safety on broken-ref cBR
+rm -f "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect_empty "agy stop: USER_CANCELED skips stop enforcement" "$(printf '{"conversationId":"cBR","terminationReason":"USER_CANCELED","workspacePaths":["%s"]}' "$AP" | "$AD" stop)"
+expect_empty "agy stop: ERROR skips stop enforcement" "$(printf '{"conversationId":"cBR","terminationReason":"ERROR","workspacePaths":["%s"]}' "$AP" | "$AD" stop)"
+expect_empty "agy stop: MAX_TOKEN_BUDGET_EXCEEDED skips stop enforcement" "$(printf '{"conversationId":"cBR","terminationReason":"MAX_TOKEN_BUDGET_EXCEEDED","workspacePaths":["%s"]}' "$AP" | "$AD" stop)"
+expect "agy stop: NO_TOOL_CALL enforces stop (real Antigravity 2.0 enum)" '"decision": "continue"' "$(printf '{"conversationId":"cBR","terminationReason":"NO_TOOL_CALL","workspacePaths":["%s"]}' "$AP" | "$AD" stop)"
+# 1-line edit_file on a 25-line file in strict mode -> trivial (<8 added lines) + agy_changed retired
+{ for i in $(seq 1 25); do echo "v$i = $i"; done; } > "$AP/src/big.py"
+printf 'strict\n' > "$AP/.horos/mode"
+printf '{"toolCall":{"name":"edit_file","args":{"Path":"%s/src/big.py","Replacement":"v1 = 99"}},"conversationId":"cTINY","workspacePaths":["%s"]}' "$AP" "$AP" | "$AD" pre-tool >/dev/null
+rm -f "$AP/.horos/stop_guard_decision" "$AP/.horos/stop_guard_claim"
+expect_empty "agy stop: 1-line edit on 25-line file is trivial in strict mode" "$(printf '{"conversationId":"cTINY","terminationReason":"NO_TOOL_CALL","workspacePaths":["%s"]}' "$AP" | "$AD" stop)"
+expect_empty "agy stop: clean stop retires agy_changed.<conv>" "$([ -f "$AP/.horos/agy_changed.cTINY" ] && echo "STILL_THERE" || true)"
+printf 'block\n' > "$AP/.horos/mode"
+
+echo "== D32: horos prune, multi-harness uninstall, and doctor drift diagnostics =="
+PRNP="$TMP/pruneproj"; mkdir -p "$PRNP/.horos"
+{ printf '2020-01-01T00:00:00Z\tStop\ttelemetry\told\tHOROS-TEL-LOOPGUARD\n'
+  printf '2099-01-01T00:00:00Z\tStop\ttelemetry\tfresh\tHOROS-TEL-LOOPGUARD\n'
+} > "$PRNP/.horos/violations.log"
+{ printf '{"id":"C1","date":"2020-01-01T00:00:00+00:00"}\n'
+  printf '{"id":"C2","date":"2099-01-01T00:00:00+00:00"}\n'
+} > "$PRNP/.horos/claims.jsonl"
+pr_out="$("$HOOKS/horos" prune --days 14 "$PRNP")"
+expect "prune --days 14: drops 1 aged violation + keeps 1" "violations_dropped=1 (kept=1)" "$pr_out"
+expect "prune --days 14: drops 1 aged claim" "claims_dropped=1" "$pr_out"
+printf 'x\n' > "$PRNP/.horos/agy_changed.old"
+printf '{"s":1}\n' > "$PRNP/.horos/stop_guard"
+pr_all="$("$HOOKS/horos" prune --all "$PRNP")"
+expect "prune --all: removes agy_temp and resets guards" "agy_temp_removed=1 guards_reset=1" "$pr_all"
+expect_empty "prune --all: violations.log removed" "$([ -f "$PRNP/.horos/violations.log" ] && echo "LEFT" || true)"
+# uninstall --harness agy preserves non-horos keys
+printf '{"other":{"Stop":[]},"horos":{"Stop":[]}}\n' > "$AGYT/.agents/hooks.json"
+"$HOOKS/horos" uninstall --harness agy "$AGYT" >/dev/null
+expect_empty "uninstall --harness agy: strips horos group" "$(grep -F '"horos"' "$AGYT/.agents/hooks.json" || true)"
+expect "uninstall --harness agy: preserves other group" '"other"' "$(cat "$AGYT/.agents/hooks.json")"
+# doctor drift detection
+DRP="$TMP/driftproj"; mkdir -p "$DRP/.claude" "$DRP/.agents" "$DRP/.horos"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|MultiEdit","hooks":[{"type":"command","command":"x/scope-guard.sh"}]}]}}\n' > "$DRP/.claude/settings.json"
+printf '{"horos":{"PreInvocation":[{"type":"command","command":"x/agy-adapter.sh session-start"}]}}\n' > "$DRP/.agents/hooks.json"
+printf '/nonexistent/foreign/user/horos\n' > "$DRP/.horos/cli.path"
+dr_out="$("$HOOKS/horos" doctor "$DRP")"
+expect "doctor drift: flags stale edit matcher" "edit matcher missing NotebookEdit|apply_patch" "$dr_out"
+expect "doctor drift: flags legacy PreInvocation" "legacy PreInvocation" "$dr_out"
+expect "doctor drift: flags broken cli.path" "non-executable path" "$dr_out"
+
+mode warn
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

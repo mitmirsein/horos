@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Philosophy 5 — a broad definition of "done".
-# Stop: refuse a turn that ends by *promising* work instead of doing it (fablize-style),
-# or that *claims completion* without having used a single tool to verify (conservative).
-# Loop guard: prefer stop_hook_active if the runtime supplies it; else a session-keyed counter.
+# Stop: refuse a turn that ends by promising work instead of doing it, or that claims completion
+# without having used a single tool to verify (# D27, # D30).
 set -euo pipefail
 hook_event=Stop
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -15,72 +14,25 @@ tp="$(json_field transcript_path)"
 if [ -z "$tp" ] || [ ! -f "$tp" ]; then pass; fi
 
 GUARD="$HOROS_STATE/stop_guard"
-prev_sid=""; prev_n=0
-if [ -f "$GUARD" ]; then read -r prev_sid prev_n < "$GUARD" || true; fi
-[ "$prev_sid" = "$sid" ] || prev_n=0
-[[ "${prev_n:-0}" =~ ^[0-9]+$ ]] || prev_n=0
-if [ "${prev_n:-0}" -ge "$(loop_threshold)" ]; then
-  printf '%s 0\n' "$sid" > "$GUARD"   # already nudged twice this session: stop nagging
-  pass
-fi
+guard_check_or_pass "$GUARD" "$sid"
 
-# D16: a judge crash must not kill the Stop silently-with-stderr — trace PYFAIL, then pass.
-verdict="$(HOROS_TP="$tp" python3 - 2>/dev/null <<'PY'
-import json, os, re
-tp = os.environ["HOROS_TP"]
-last = None
-tool_seen = False
-with open(tp) as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            o = json.loads(line)
-        except Exception:
-            continue
-        if o.get("type") == "assistant":
-            last = o
-            for b in (o.get("message", {}) or {}).get("content", []) or []:
-                if isinstance(b, dict) and b.get("type") == "tool_use":
-                    tool_seen = True
-if not last:
-    print("PASS"); raise SystemExit
-content = (last.get("message", {}) or {}).get("content", []) or []
-has_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
-text = " ".join(b.get("text", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "text").strip()
-low = text.lower()
-tail = low[-400:]
-# legitimate stop: the turn ends by asking / offering — leave it alone
-if re.search(r"(\?|shall i|would you like|할까요|드릴까요|하시겠|여쭤|알려\s*주세요)", tail):
-    print("PASS"); raise SystemExit
-if has_tool:
-    print("PASS"); raise SystemExit          # ended on a tool call, not a bare promise
-# promise-without-action
-if re.search(r"\b(i'?ll|i will|let me|next,? i|now i'?ll)\b.{0,40}\b"
-             r"(implement|create|write|add|run|fix|build|test)\b", low) \
-   or re.search(r"(이제|다음으로|곧|바로)\s*.{0,20}(구현|작성|추가|실행|수정|만들|돌려|테스트)", low):
-    print("PROMISE"); raise SystemExit
-# completion claim with zero tool use in the whole session (near-zero false positive)
-if (not tool_seen) and re.search(r"(완료(?:했|됐|됩|입니다)|finished|all set|\bdone\b|✅|끝났|마쳤)", low):
-    print("CLAIM"); raise SystemExit
-print("PASS")
-PY
-)" || { log_event HOROS-TEL-PYFAIL finish-the-work; printf '%s 0\n' "$sid" > "$GUARD"; pass; }
+# D16/D30: judge via shared stdlib core; trace PYFAIL and fail-open on unexpected exception.
+verdict="$(PYTHONPATH="$HOROS_HERE" HOROS_TP="$tp" python3 -c \
+  'import os, horos_core; print(horos_core.judge_finish_transcript(os.environ["HOROS_TP"]))' \
+  2>/dev/null)" || { log_event HOROS-TEL-PYFAIL finish-the-work; guard_reset "$GUARD" "$sid"; pass; }
 
 case "$verdict" in
   PROMISE)
-    n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
+    n="$(guard_bump "$GUARD" "$sid")"
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi
     enforce_stop HOROS-FIN-PROMISE "finish/promise" "promise-without-action" \
       "직전 응답이 작업을 '하겠다'고 말만 하고 도구 호출 없이 끝났습니다. Action: perform the promised work NOW with tool calls, then end the turn. (약속한 그 작업을 지금 도구로 실행하세요.)" ;;
   CLAIM)
-    n=$(( prev_n + 1 )); printf '%s %s\n' "$sid" "$n" > "$GUARD"
-    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi   # D16: silence starts next Stop
+    n="$(guard_bump "$GUARD" "$sid")"
+    if [ "$n" -eq "$(loop_threshold)" ]; then log_event HOROS-TEL-LOOPGUARD "finish:$sid"; fi
     enforce_stop HOROS-FIN-NOEVIDENCE "finish/claim" "completion-without-evidence" \
       "완료를 선언했지만 이번 세션에 검증 도구 호출이 한 번도 없습니다. Action: run THIS project's verification (its tests / build / typecheck) with tools and report the output before claiming done." ;;
   *)
-    printf '%s 0\n' "$sid" > "$GUARD"
+    guard_reset "$GUARD" "$sid"
     pass ;;
 esac

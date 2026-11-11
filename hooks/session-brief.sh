@@ -1,55 +1,32 @@
 #!/usr/bin/env bash
 # session-brief.sh (D17) — SessionStart: push the horos protocol INTO the session context.
-# The enforcement inversion (blockable paths fire only after the agent voluntarily adopts the
-# conventions) means a model that never LOADED the conventions is silently un-governed; weaker
-# models don't pull them from docs or skills. So horos injects them itself, each session start:
-# plain stdout on exit 0 is the documented SessionStart injection channel (<=15 lines, filled
-# command templates with the actual next-free ids). Also writes .horos/cli.path so slash
-# commands find the central CLI under BOTH plugin and reference installs (D13 gap).
-# All reads fail-open: a broken ledger/scope must never break session start.
+# Plain stdout on exit 0 is the SessionStart injection channel (<=15 lines, filled command
+# templates with actual next-free ids). Writes .horos/cli.path so slash commands find the central
+# CLI under plugin and reference installs (D13, D27, D28).
 set -uo pipefail
 hook_event=SessionStart
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$HOROS_HERE"
 CLI="$HERE/horos"
 printf '%s\n' "$CLI" > "$HOROS_STATE/cli.path" 2>/dev/null || true
 ver="unknown"
 [ -f "$HERE/../VERSION" ] && ver="$(tr -d '[:space:]' < "$HERE/../VERSION" 2>/dev/null || echo unknown)"
 
-# one python pass: line1 = "<nextD> <nextA> <ndecisions> <nclaims>", line2 = scope globs (may be empty)
 bf="$(mktemp)"; trap 'rm -f "$bf"' EXIT
-HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_CLAIMS="$HOROS_STATE/claims.jsonl" \
-HOROS_SCOPE="$HOROS_STATE/scope.json" python3 - > "$bf" 2>/dev/null <<'PY' || true
-import json, os, re
-def scan(path):
-    ids, n = set(), 0
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line: continue
-                try: r = json.loads(line)
-                except Exception: continue
-                n += 1
-                if r.get("id"): ids.add(str(r["id"]))
-    except (OSError, ValueError):
-        pass
-    return ids, n
-ids, ndec = scan(os.environ["HOROS_LEDGER"])
-_, ncl = scan(os.environ["HOROS_CLAIMS"])
-def nf(p):
-    mx = 0
-    for i in ids:
-        m = re.match("^" + p + r"([1-9][0-9]*)$", i)
-        if m: mx = max(mx, int(m.group(1)))
-    return "%s%d" % (p, mx + 1)
+PYTHONPATH="$HERE" HOROS_LEDGER="$HOROS_ROOT/decisions.jsonl" HOROS_CLAIMS="$HOROS_STATE/claims.jsonl" \
+  HOROS_SCOPE="$HOROS_STATE/scope.json" python3 - > "$bf" 2>/dev/null <<'PY' || true
+import json, os, horos_core
+
+ledger_recs, _ = horos_core.load_jsonl(os.environ["HOROS_LEDGER"])
+claim_recs, _ = horos_core.load_jsonl(os.environ["HOROS_CLAIMS"])
+ids = {str(r["id"]) for r in ledger_recs if r.get("id")}
 sc = ""
 try:
-    sc = " ".join(str(g) for g in json.load(open(os.environ["HOROS_SCOPE"])).get("allow", []))
+    sc = " ".join(str(g) for g in json.load(open(os.environ["HOROS_SCOPE"], encoding="utf-8")).get("allow", []))
 except Exception:
     sc = ""
-print(nf("D"), nf("A"), ndec, ncl)
+print(horos_core.next_free_id(ids, "D"), horos_core.next_free_id(ids, "A"), len(ledger_recs), len(claim_recs))
 print(sc)
 PY
 nfd=""; nfa=""; ndec=""; ncl=""; scope_globs=""

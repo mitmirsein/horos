@@ -1,58 +1,72 @@
 #!/usr/bin/env bash
 # Philosophy 3 — boundary convergence.
-# PreToolUse(Edit|Write|MultiEdit): a file edit must fall inside the declared scope allowlist.
+# PreToolUse(Edit|Write|MultiEdit|NotebookEdit|apply_patch): file edits must fall inside the
+# declared scope allowlist (# D18, # D28, # D29).
 # No scope declared => no enforcement (declaring the boundary is an opt-in act, per philosophy 3).
 set -euo pipefail
 hook_event=PreToolUse
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-tool="$(json_field tool_name)"
-case "$tool" in Edit|Write|MultiEdit|NotebookEdit) ;; *) pass ;; esac   # D18: notebooks too
-
-fp="$(json_field tool_input.file_path)"
-[ -n "$fp" ] || fp="$(json_field tool_input.notebook_path)"             # D18: NotebookEdit field
-if [ -z "$fp" ]; then pass; fi
-
-# horos's own state + the decision ledger are always writable, else /scope would deadlock
-# and decision-guard (philosophy 2) could never be satisfied.
-case "$fp" in *"/.horos/"*|*"/.horos"|*"/decisions.jsonl") pass ;; esac
-
 SCOPE="$HOROS_STATE/scope.json"
 if [ ! -f "$SCOPE" ]; then pass; fi
 
-# D16: match the Stop guards — a judge crash must fail-open (a scope-guard bug denying every edit
-# is worse than an unenforced boundary), not leak a traceback to the PreToolUse stderr.
-verdict="$(HOROS_ROOT="$HOROS_ROOT" HOROS_FP="$fp" HOROS_SCOPE="$SCOPE" python3 - 2>/dev/null <<'PY'
-import json, os, fnmatch
-root = os.environ["HOROS_ROOT"].rstrip('/')
-fp = os.environ["HOROS_FP"]
-if fp.startswith(root + '/'):
-    rel = fp[len(root) + 1:]
-elif fp.startswith('/'):
-    rel = fp            # absolute path outside the project => out of scope by definition
-else:
-    rel = fp
+# D16/D28/D29: single python judge handles Claude tools + Codex apply_patch, resolves '..' and
+# symlinks via realpath on both root and target, and enforces segment-aware '*' vs '**' globs.
+vfile="$(mktemp)"; trap 'rm -f "$vfile"' EXIT
+PYTHONPATH="$HOROS_HERE" HOROS_IN="$INPUT" HOROS_ROOT="$HOROS_ROOT" HOROS_SCOPE="$SCOPE" \
+  python3 - > "$vfile" 2>/dev/null <<'PY' || { log_event HOROS-TEL-PYFAIL scope-guard; pass; }
+import json, os, horos_core
+
 try:
-    allow = json.load(open(os.environ["HOROS_SCOPE"])).get("allow", [])
+    d = json.loads(os.environ.get("HOROS_IN") or "{}")
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+
+tool = str(d.get("tool_name") or "")
+inp = d.get("tool_input")
+if tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"):
+    print("OK"); raise SystemExit
+
+targets = []
+if tool == "apply_patch":
+    targets = [p for p, _ in horos_core.extract_apply_patch_entries(inp) if p]
+elif isinstance(inp, dict):
+    fp = str(inp.get("file_path") or inp.get("notebook_path") or "")
+    if fp:
+        targets = [fp]
+
+if not targets:
+    print("OK"); raise SystemExit
+
+root = os.environ["HOROS_ROOT"]
+try:
+    allow = json.load(open(os.environ["HOROS_SCOPE"], encoding="utf-8")).get("allow", [])
+    if not isinstance(allow, list):
+        allow = []
+    allow = [str(x) for x in allow]
 except Exception:
     allow = []
-def match(rel, pat):
-    if fnmatch.fnmatch(rel, pat):
-        return True
-    base = pat.rstrip('*').rstrip('/')      # treat "dir/" or "dir/**" as a prefix
-    return bool(base) and (rel == base or rel.startswith(base + '/'))
-ok = any(match(rel, p) for p in allow)
-# 4th field = the filled /scope example. Quote ONLY tokens that actually contain whitespace (or a
-# quote), so a whitespace glob stays one argument when copy-pasted, while clean globs like hooks/**
-# are left verbatim (over-quoting `**` would be noise for the slash command). # D15
+
 def q(x):
     return "'" + x.replace("'", "'\\''") + "'" if (any(c.isspace() for c in x) or "'" in x) else x
-example = " ".join(q(x) for x in (list(allow) + [rel]))
-print("OK" if ok else "OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + example)
-PY
-)" || { log_event HOROS-TEL-PYFAIL scope-guard; pass; }
 
-# empty verdict (judge crashed under 2>/dev/null) -> fail-open, not fail-closed deny (D16)
+for fp in targets:
+    inside, rel = horos_core.normalize_relpath(fp, root)
+    # horos's own state + decision ledger inside THIS project are always writable
+    if inside and (rel == ".horos" or rel.startswith(".horos/") or rel == "decisions.jsonl"):
+        continue
+    if inside and any(horos_core.glob_match(rel, p) for p in allow):
+        continue
+    example = " ".join(q(x) for x in (list(allow) + [rel]))
+    print("OUT\t" + rel + "\t" + "; ".join(allow) + "\t" + example)
+    raise SystemExit
+
+print("OK")
+PY
+
+verdict="$(cat "$vfile")"
 if [ -z "$verdict" ]; then log_event HOROS-TEL-PYFAIL scope-guard; pass; fi
 if [ "${verdict%%	*}" = OK ]; then pass; fi
 rel="$(printf '%s' "$verdict" | cut -f2)"

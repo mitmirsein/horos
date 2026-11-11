@@ -1,40 +1,42 @@
-# horos — agent constitution (this repo)
+# horos: 에이전트 작업 헌법 (정본)
 
-> **이 파일(`AGENTS.md`)이 정본이다.** `CLAUDE.md` 와 `GEMINI.md` 는 이 파일로의 *상대* 심링크다 —
-> 셋 중 무엇을 열어 편집하든 실체는 이 파일이며, 여기만 고치면 Claude·Codex·Gemini 세 에이전트에 동시 반영된다.
-> (절대경로 심링크 금지: 머신마다 사용자명이 달라 깨질 수 있다. 같은 폴더 상대링크라야 안전.)
+> 이 파일(`AGENTS.md`)이 **정본**이다. `CLAUDE.md`와 `GEMINI.md`는 이 파일로 연결된 상대 심링크다.
+> 셋 중 어느 파일을 열어 편집하든 실체는 이 파일이며, 여기만 수정하면 Claude, Codex, Gemini 세 에이전트에 동시에 반영된다.
+> (절대경로 심링크는 금지한다. 머신마다 사용자명이 달라 링크가 파손될 수 있으므로 같은 폴더 내 상대 심링크만 허용한다.)
 
-이 레포에서 작업하는 에이전트는 horos 가 강제하는 작업 철학을 **dogfooding** 한다.
-horos 는 그 철학을 코드로 강제하는 레이어이고, 이 레포 자신이 첫 적용 대상이다.
+이 저장소에서 작업하는 에이전트는 horos가 강제하는 작업 철학을 스스로 적용(dogfooding)한다.
+horos는 작업 철학을 결정론적 훅으로 강제하는 규율 계층이며, 이 저장소 자신이 첫 번째 적용 대상이다.
 
 ## 작업 철학 (강제 대상)
 
-1. **불신을 기본값 (계약적)** — 외부 입력·모델 출력·미래의 자기 자신도 의심한다. 의미값 재조립, clamp, 경계값 4종(정상/매핑/None/변조) 테스트. 코딩 시 `contract-first` 스킬(`.claude/skills/`)이 절차를 안내한다 — 기계 강제가 아닌 규율층. 변경을 끝내면 `horos claim <completion|consistency> <assert> <files> [refs] [flags]` 로 검증 가능한 주장을 떨군다 — **감사층** claim-guard 가 그 형식·바인딩 신선도·내부 불변식·교차참조를 결정론으로 판정한다(의미 진리는 보장 안 함; LLM 은 주장만, 판정은 엔진).
-2. **결정을 추적 가능한 객체로 외화** — 결정에 ID(D1…)를 붙이고 이유+비용+탈출구를 글로 남긴다. 코드 주석(`# D<n>`)으로 결정을 참조하고 `horos decide D<n> <why> <cost> <escape>` 로 ledger(`decisions.jsonl`)에 외화하라 — decision-guard 가 참조무결성을 검사한다(주석 밖 문자열 리터럴과 `tests/`·`fixtures` 파일은 무시). 해소하지 않고 보류한 **긴장(아포리아)** 은 `horos aporia A<n> "<극1>|<극2>" <why_unresolved> <trigger>` 로 외화하고 코드에 `# A<n>` 으로 참조한다 — decision-guard 가 broken-ref 만 검사하며 미외화는 강요하지 않는다(결정을 억지로 평탄화하지 말 것).
-3. **풀기 전에 경계부터 선언** — "건드리지 않을 것"을 먼저 적어 변경 반경을 수렴시킨다. 작업 시작 시 `/scope` 로 경계를 선언하라.
-4. **가역성 선호** — 갈아엎지 말고 얹는다. 파괴·비가역 명령(`rm -rf`, `git reset --hard`, `--force`) 전에 dry-run/백업/별도 커밋.
-5. **'완료'의 넓은 정의** — 동작+테스트+문서 현행화+검증까지가 한 단위. 약속으로 턴을 끝내지 말고 도구로 실행하라.
+1. **불신을 기본값으로 삼는 계약 중심 설계**: 외부 입력, 모델 출력, 미래의 자기 자신까지 모두 검증 대상으로 간주한다. 의미값 재조립, 범위 제한(clamp), 경계값 4종(정상, 매핑, 누락, 변조) 테스트를 기본으로 적용한다. 코딩 시 `contract-first` 스킬(`.claude/skills/`)이 절차를 안내하며, 변경을 마치면 `horos claim <completion|consistency> <assert> <files> [refs] [flags]` 명령으로 검증 가능한 주장을 남긴다. 감사층 `claim-guard`가 주장의 형식, 해시 신선도, 내부 불변식, 교차참조를 결정론적으로 판정한다.
+2. **결정을 추적 가능한 객체로 외화**: 주요 설계 결정에 ID(`D1` 등)를 부여하고 이유, 비용, 탈출구를 기록한다. 코드 주석(`# D<n>`)으로 결정을 참조하고 `horos decide D<n> <why> <cost> <escape>` 명령으로 원장(`decisions.jsonl`)에 기록하면 `decision-guard`가 참조 무결성을 검사한다 (문자열 리터럴, URL 경로, 테스트 및 픽스처 파일은 검사에서 제외한다, D3, D29). 해소하지 않고 보류한 **긴장**(aporia)은 `horos aporia A<n> "<극1>|<극2>" <why_unresolved> <trigger>` 명령으로 외화하고 코드에 `# A<n>`으로 참조한다 (`decision-guard`는 깨진 참조만 차단하며 미외화는 강제하지 않는다, D8).
+3. **문제 해결 전 경계 선언**: 건드리지 않을 영역을 먼저 확정하여 변경 반경을 수렴시킨다. 작업 시작 시 `/scope` 또는 `horos scope set` 명령으로 허용 경계를 선언한다 (`scope-guard`는 `realpath` 정규화와 세그먼트 구분 글로브를 통해 `..` 우회와 심링크 탈출을 차단한다, D29).
+4. **가역성 우선**: 기존 구조를 파괴하기보다 안전하게 덧댄다. 비가역 파괴 명령(`rm -rf`, `git reset --hard`, `git checkout .`, `git restore .`, `git push -f`, `git branch -D`, `bash -c`/`python -c` 인라인 삭제 등, D30) 실행 전에 백업이나 별도 커밋으로 복구 지점을 먼저 확보한다.
+5. **완료의 넓은 정의**: 구현, 단위 검증, 문서 현행화, 최종 실행 확인까지를 하나의 완료 단위로 본다. 다음 작업을 하겠다는 약속 문장으로 턴을 끝내지 않고 즉시 도구를 호출하여 실행한다 (D30).
 
 ## 판정 메시지 계약 (D15)
 
-모든 판정·CLI 에러는 `[horos:block|warn] <CODE> <한국어>. Action: <영어 명령형 1줄>. 예: <실값 채운 명령 1개>` 형식을 따른다
-(FIN 계열은 예시 생략 가능 — 액션이 특정 명령이 아니라 "도구 실행"이므로). 코드 레지스트리 정본은 `hooks/lib.sh` 상단 주석 표.
-새 판정 경로를 추가하면 반드시 이 계약에 맞추고 레지스트리 표·README 표를 함께 갱신한다.
+모든 훅 판정과 CLI 오류는 `[horos:block|warn] <CODE> <한국어 설명>. Action: <영어 명령형 1줄>. 예: <실값 채운 명령 1개>` 형식을 따른다 (`FIN` 계열은 특정 명령 대신 도구 즉시 실행이 목적이므로 예시 생략 가능). 코드 레지스트리 정본은 `hooks/lib.sh` 상단 주석 표다. 새 판정 경로를 추가할 때는 이 계약과 함께 `hooks/lib.sh`, `README.md`, `tests/run.sh`를 동시에 갱신한다.
 
-## 규칙
+## 운영 및 개발 규칙
 
-- 코드/훅을 수정하면 반드시 `bash tests/run.sh` 를 돌려 **전체 통과**를 확인하고 결과를 보고한다 (철학 5).
-- 훅 스크립트는 순수 bash + python3 stdlib 만 사용한다. venv·jq·절대경로 심링크 금지 (멀티머신 이식성).
-- `.horos/` 는 런타임 상태다(커밋·동기화 금지). `decisions.jsonl` 은 공유 산출물이라 커밋 대상.
-- warn→block→strict 는 단계적으로만 승격한다(D18). `horos log`/`horos doctor`(health) 로 오탐을 검토하기 전에 올리지 않는다. strict 는 하위 모델 구동 등 규약 완전 강제가 필요할 때만.
-- 새 강제 규칙을 추가하면: 훅 + 단위검증 fixture + README 매핑표 + 이 파일 + **`hooks/hooks.json`(플러그인)·`install` 방출부 패리티**를 **함께** 갱신한다 (계약 변경의 동반 파일; 매처·이벤트가 세 곳에 존재한다 — settings.json·hooks.json·install).
-- 커맨드(`commands/`)·스킬(`skills/`)의 정본은 **레포 루트**다(플러그인 노출용, D19). `.claude/` 쪽은 상대 심링크 — 심링크를 실파일로 대체하지 말 것(드리프트 재발).
-- horos 가 조상 루트의 하위 폴더라 자체 세션으로 열리지 않을 땐, 조상 `.claude/settings.json` 에 `hooks/parent-bridge.sh`(pre-edit/pre-bash/stop)를 등록해 강제한다 — horos 하위 작업만 위임하고 타 프로젝트엔 무영향(D11). decision/claim 은 `CLAUDE_PROJECT_DIR` 밖 파일을 판정하지 않는다(D10).
-- 다른 프로젝트에 horos 를 얹을 땐 hooks/ 를 **복사하지 말고**: 플러그인이 설치돼 있으면 `hooks/horos init <target>`(활성 마커만, D19), 아니면 `hooks/horos install <target>` 로 중앙 소스를 *참조*시킨다 — 복사본은 드리프트한다(D12). 두 경로가 겹치면 로컬 배선이 이긴다(D20; 이관은 `horos uninstall <target>`). 훅은 Claude Code 가 주입하는 `CLAUDE_PROJECT_DIR` 로 대상에 묶이고, CLI 는 그 값이 없으면 CWD 의 git 루트로 ROOT 를 잡는다(D13). `hooks/horos doctor <target>` 로 배선·버전·활성·health 를 점검한다.
+- 코드나 훅을 수정하면 반드시 `bash tests/run.sh`를 실행하여 **전체 통과**(실패 0건)를 확인하고 결과를 보고한다 (철학 5).
+- 훅과 코어 모듈(`hooks/horos_core.py`)은 순수 `bash`와 `python3` 표준 라이브러리만 사용한다. 가상환경, `jq`, 절대경로 하드코딩을 일체 금지한다 (멀티머신 이식성 보장).
+- `.horos/`는 머신 로컬 런타임 상태이므로 커밋 및 머신 간 동기화를 금지한다 (`.gitignore` 및 워크스페이스 `.stignore` 등록). 반면 `decisions.jsonl`과 `tests/fixtures/*.jsonl`은 공유 정본이므로 버전 관리와 동기화 대상에 포함한다.
+- `warn` -> `block` -> `strict` 승격은 단계적으로만 수행한다 (D18). `horos log` 및 `horos doctor`의 상태 지표를 먼저 점검하며, 오래된 런타임 로그는 `horos prune`으로 정리한다 (D32).
+- 새 강제 규칙이나 도구 매처를 추가할 때는 훅 본체, `hooks/horos_core.py`, 단위검증(`tests/run.sh`), `README.md`, `.claude/settings.json`, `hooks/hooks.json`, `hooks/horos`의 `install` 방출부 패리티를 함께 갱신한다 (`Edit|Write|MultiEdit|NotebookEdit|apply_patch`, D28).
+- 커맨드(`commands/`)와 스킬(`skills/`)의 정본은 저장소 루트에 두며, `.claude/` 하위 항목은 상대 심링크 상태를 유지한다 (D19).
+- 다른 프로젝트에 horos를 적용할 때는 `hooks/`를 복사하지 않고 중앙 소스를 참조 연결한다:
+  - Claude Code 플러그인: `hooks/horos init <target>` (D19/D20)
+  - Claude Code 참조 배선: `hooks/horos install <target>` (D12)
+  - Antigravity 2.0 참조 배선: `hooks/horos install --harness agy <target>` (D23/D31)
+  - Codex CLI 참조 배선: `hooks/horos install --harness codex <target>` (D28)
+- `hooks/lib.sh`는 `HOROS_PROJECT_DIR` -> `CLAUDE_PROJECT_DIR` -> 입력 페이로드(`workspacePaths`/`cwd`) -> 프로세스 CWD의 Git 루트 순으로 프로젝트 루트를 자동 해석하므로 Claude, Antigravity, Codex, 일반 POSIX 하네스(`HOROS_HARNESS=exitcode`)에서 동일하게 동작한다 (D28).
 
-## 검증
+## 검증 명령
 
-```
-bash tests/run.sh        # unit checks (scope/reversibility/finish/decision/claim/plugin × warn/block/strict)
-hooks/horos doctor       # 설치 점검 (version·plugin·activation·precedence·health)
+```bash
+bash tests/run.sh        # 단위 및 경계값 전체 검증 (warn/block/strict × claude/agy/codex/exitcode)
+hooks/horos doctor       # 배선, 하네스, 설정 드리프트, 버전, 텔레메트리 종합 점검
 ```

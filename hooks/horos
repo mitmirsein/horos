@@ -1,35 +1,36 @@
 #!/usr/bin/env bash
-# horos — CLI to declare scope, toggle enforcement, externalize decisions, review log.
+# horos — CLI to declare scope, toggle enforcement, externalize decisions, deposit claims,
+# wire multi-harness installs (claude | agy | codex), prune runtime logs, and diagnose health.
 set -euo pipefail
-# ROOT resolution (D13): hooks always receive CLAUDE_PROJECT_DIR from Claude Code, but the CLI is
-# often invoked from a *consuming* project (central single-source model, D12) where it is unset —
-# fall back to the CWD's git root (not this script's dir) so decide/scope/claim land in the project
-# you are in, not in central horos. ROOT_SRC records HOW it resolved (env|git|pwd) so write
-# commands can warn loudly on the weakest fallback instead of recording into the wrong ledger. # D14
-if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  ROOT="$CLAUDE_PROJECT_DIR"; ROOT_SRC=env
+
+# ROOT resolution (D13, D14, D28): check HOROS_PROJECT_DIR -> CLAUDE_PROJECT_DIR -> git toplevel -> pwd.
+if [ -n "${HOROS_PROJECT_DIR:-}" ]; then
+  ROOT="${HOROS_PROJECT_DIR%/}"; [ -n "$ROOT" ] || ROOT="/"; ROOT_SRC=env
+elif [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+  ROOT="${CLAUDE_PROJECT_DIR%/}"; [ -n "$ROOT" ] || ROOT="/"; ROOT_SRC=env
 elif ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$ROOT" ]; then
   ROOT_SRC=git
 else
   ROOT="$(pwd)"; ROOT_SRC=pwd
 fi
-# CENTRAL = where this script lives (the one central horos), distinct from ROOT (the project
-# being operated on). Version/doctor must report the central copy, not the consumer.
+
+# CENTRAL = where this script lives (distinct from ROOT, the target project).
 CENTRAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd || printf '%s' "$ROOT")"
+HERE="$CENTRAL/hooks"
 S="$ROOT/.horos"; mkdir -p "$S"
 
-# read mode robustly (absent file -> warn; bare `< file` would leak a shell error). (D7)
-read_mode() { local m=""; [ -f "$S/mode" ] && m="$(tr -d '[:space:]' < "$S/mode" 2>/dev/null)"; [ -n "$m" ] && printf '%s' "$m" || printf 'warn'; }
+read_mode() {
+  local m=""
+  [ -f "$S/mode" ] && m="$(tr -d '[:space:]' < "$S/mode" 2>/dev/null)"
+  case "$m" in warn|block|strict) printf '%s' "$m" ;; *) printf 'warn' ;; esac
+}
 
-# D14: write commands call this first — a pwd-fallback ROOT is the classic wrong-ledger trap
-# (invoked from a non-git CWD in some other project). Notice, don't block (fail-open for CLI).
 warn_root() {
   if [ "$ROOT_SRC" = pwd ]; then
     echo "notice: HOROS-CLI-ROOT root=$ROOT (CLAUDE_PROJECT_DIR unset, CWD is not a git repo). If this is the wrong project, cd to the project root or export CLAUDE_PROJECT_DIR, then rerun." >&2
   fi
 }
 
-# single source for what counts as a horos hook entry in a settings.json (install/uninstall/doctor)
 HOROS_BASENAMES="scope-guard.sh reversibility-guard.sh finish-the-work.sh decision-guard.sh claim-guard.sh parent-bridge.sh session-brief.sh"
 export HOROS_BASENAMES
 
@@ -42,44 +43,50 @@ case "$cmd" in
         [ "$#" -ge 1 ] || { echo "usage: horos scope set <glob>..." >&2; exit 1; }
         warn_root
         HOROS_S="$S" python3 - "$@" <<'PY'
-import json, os, sys, datetime
+import datetime, json, os, sys
 allow = sys.argv[1:]
 path = os.path.join(os.environ["HOROS_S"], "scope.json")
-json.dump({"allow": allow, "declared_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
-          open(path, "w"), ensure_ascii=False, indent=2)
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump({"allow": allow, "declared_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+              fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
 PY
         echo "scope set: $* -> $S/scope.json" ;;
       show)  cat "$S/scope.json" 2>/dev/null || echo "(no scope declared)" ;;
       clear) rm -f "$S/scope.json"; echo "scope cleared" ;;
       *) echo "usage: horos scope set|show|clear" >&2; exit 1 ;;
     esac ;;
+
   mode)
     sub="${1:-show}"
     case "$sub" in
-      warn|block|strict) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;  # D18
-      show|"")    echo "$(read_mode)" ;;
+      warn|block|strict) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;
+      show|"")           echo "$(read_mode)" ;;
       *) echo "usage: horos mode warn|block|strict|show" >&2; exit 1 ;;
     esac ;;
+
   decide)
     id="${1:-}"; why="${2:-}"; cost="${3:-}"; esc="${4:-}"; files="${5:-}"
     if [ -z "$id" ] || [ -z "$why" ] || [ -z "$cost" ] || [ -z "$esc" ]; then
       echo "usage: horos decide D<n> <why> <cost> <escape> [files,csv]" >&2; exit 1; fi
     warn_root
-    # D14: deposit-time validation. A malformed id ('foo') appended silently and became a dead
-    # record no [DA]-comment could reference; a duplicate id silently shadowed the original
-    # (judges read the ledger last-wins). Fail LOUD at deposit, with a copy-pasteable fix.
-    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HWHY="$why" HCOST="$cost" HESC="$esc" HFILES="$files" HROOT="$ROOT" python3 - <<'PY'
-import json, os, re, sys, shlex, datetime
+    PYTHONPATH="$HERE" HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HWHY="$why" HCOST="$cost" HESC="$esc" HFILES="$files" HROOT="$ROOT" python3 - <<'PY'
+import datetime, fcntl, json, os, re, shlex, sys
+try:
+    import horos_core
+except Exception:
+    horos_core = None
+
 led = os.environ["HOROS_LEDGER"]; rid = os.environ["HID"]
 ids = set()
 try:
-    with open(led) as f:
+    with open(led, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line: continue
             try: r = json.loads(line)
             except Exception: continue
-            if r.get("id"): ids.add(str(r["id"]))
+            if isinstance(r, dict) and r.get("id"): ids.add(str(r["id"]))
 except FileNotFoundError:
     pass
 def next_free(prefix):
@@ -99,38 +106,46 @@ if rid in ids:
                      % (rid, next_free("D"), example))
 missing = [x for x in os.environ.get("HFILES", "").split(",")
            if x and not os.path.exists(os.path.join(os.environ["HROOT"], x))]
-if missing:  # informational field: warn, still record
+if missing:
     print("warning: HOROS-CLI-NOFILE files not on disk (informational field, recorded anyway): "
           + ", ".join(missing), file=sys.stderr)
 rec = {"id": rid, "why": os.environ["HWHY"], "cost": os.environ["HCOST"],
        "escape": os.environ["HESC"],
        "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-with open(led, "a") as f:
-    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+raw = json.dumps(rec, ensure_ascii=False)
+if horos_core:
+    horos_core.locked_append(led, raw)
+else:
+    with open(led, "a", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.write(raw + "\n")
 print("recorded %s -> %s" % (rec["id"], led))
 PY
     ;;
+
   aporia)
-    # D8 — externalize a held tension (aporia) as a ledger record, mirror of `decide`.
     id="${1:-}"; poles="${2:-}"; why="${3:-}"; trig="${4:-}"; files="${5:-}"
     if [ -z "$id" ] || [ -z "$poles" ] || [ -z "$why" ] || [ -z "$trig" ]; then
       echo "usage: horos aporia A<n> \"<pole1>|<pole2>[|...]\" <why_unresolved> <trigger> [files,csv]" >&2; exit 1; fi
     warn_root
-    # D14: deposit-time validation (id format, duplicate, >=2 poles) — a 1-pole aporia was only
-    # caught later as an incomplete-ref block; fail it here with a copy-pasteable fix instead.
-    HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HPOLES="$poles" HWHY="$why" HTRIG="$trig" HFILES="$files" python3 - <<'PY'
-import json, os, re, shlex, datetime
+    PYTHONPATH="$HERE" HOROS_LEDGER="$ROOT/decisions.jsonl" HID="$id" HPOLES="$poles" HWHY="$why" HTRIG="$trig" HFILES="$files" python3 - <<'PY'
+import datetime, fcntl, json, os, re, shlex
+try:
+    import horos_core
+except Exception:
+    horos_core = None
+
 led = os.environ["HOROS_LEDGER"]; rid = os.environ["HID"]
 ids = set()
 try:
-    with open(led) as f:
+    with open(led, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line: continue
             try: r = json.loads(line)
             except Exception: continue
-            if r.get("id"): ids.add(str(r["id"]))
+            if isinstance(r, dict) and r.get("id"): ids.add(str(r["id"]))
 except FileNotFoundError:
     pass
 def next_free(prefix):
@@ -157,13 +172,18 @@ rec = {"id": rid, "type": "aporia", "poles": poles,
        "why_unresolved": os.environ["HWHY"], "trigger": os.environ["HTRIG"],
        "files": [x for x in os.environ.get("HFILES", "").split(",") if x],
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-with open(led, "a") as f:
-    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+raw = json.dumps(rec, ensure_ascii=False)
+if horos_core:
+    horos_core.locked_append(led, raw)
+else:
+    with open(led, "a", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.write(raw + "\n")
 print("recorded %s (aporia) -> %s" % (rec["id"], led))
 PY
     ;;
+
   claim)
-    # D9 — deposit a verifiable claim about the current change (audit tier). binds = sha256(now).
     sub="${1:-}"
     case "$sub" in
       show)  cat "$S/claims.jsonl" 2>/dev/null || echo "(no claims)"; exit 0 ;;
@@ -177,13 +197,13 @@ PY
     if [ -z "$assertion" ] || [ -z "$files" ]; then
       echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2; exit 1; fi
     warn_root
-    # D14: deposit-time validation. Flags are validated against the known set (a typo like
-    # 'test_added' used to become an unknown true-flag that silently disabled its invariant
-    # check in claim-guard); refs are validated for format AND ledger existence/completeness
-    # (an undefined ref used to surface only later as a Stop-time block). x_* flags are the
-    # documented extension namespace (PROPOSAL-audit-tier §6): accepted, never validated.
-    HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HLEDGER="$ROOT/decisions.jsonl" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
-import json, os, re, datetime, difflib, hashlib
+    PYTHONPATH="$HERE" HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HLEDGER="$ROOT/decisions.jsonl" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
+import datetime, difflib, fcntl, hashlib, json, os, re
+try:
+    import horos_core
+except Exception:
+    horos_core = None
+
 path = os.environ["HCLAIMS"]; ROOT = os.environ["HROOT"]
 KNOWN_FLAGS = ("tests_added", "consistent_with_refs")
 flags = [x for x in os.environ.get("HFLAGS", "").split(",") if x]
@@ -203,35 +223,52 @@ if badref:
                      "Action: fix the ref ids and rerun." % ", ".join(badref))
 ledger = {}
 try:
-    with open(os.environ["HLEDGER"]) as f:
+    with open(os.environ["HLEDGER"], encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line: continue
             try: r = json.loads(line)
             except Exception: continue
-            if r.get("id"): ledger[str(r["id"])] = r
+            if isinstance(r, dict) and r.get("id"): ledger[str(r["id"])] = r
 except FileNotFoundError:
     pass
-def complete(r):                               # D8: kind-aware completeness (mirror of the guards)
+def complete(r):
+    if horos_core:
+        return horos_core.record_complete(r)
     if r.get("type") == "aporia":
-        return bool(r.get("poles")) and all(str(r.get(k, "")).strip()
-                                             for k in ("why_unresolved", "trigger"))
+        return bool(r.get("poles")) and all(str(r.get(k, "")).strip() for k in ("why_unresolved", "trigger"))
     return all(str(r.get(k, "")).strip() for k in ("why", "cost", "escape"))
 noref = []
 for r in refs:
     if r not in ledger: noref.append(r + "(미정의/undefined)")
     elif not complete(ledger[r]): noref.append(r + "(불완전/incomplete)")
 if noref:
-    first = (noref[0].split("(")[0])
+    first = noref[0].split("(")[0]
     fix = ("horos decide %s \"<why>\" \"<cost>\" \"<escape>\"" % first) if first.startswith("D") \
           else ("horos aporia %s \"<pole1>|<pole2>\" \"<why_unresolved>\" \"<trigger>\"" % first)
     raise SystemExit("error: HOROS-CLI-NOREF refs 가 ledger(decisions.jsonl)에 완비되어 있지 않습니다 (refs must exist and be complete BEFORE the claim): %s. "
                      "Action: externalize the ref first, then rerun this claim. 예: %s" % (", ".join(noref), fix))
-def sha(p):
+real_root = os.path.realpath(ROOT)
+def norm_bind(p):
+    if horos_core:
+        inside, rel = horos_core.normalize_relpath(p, ROOT)
+        return (inside, rel)
+    rp = os.path.realpath(os.path.join(real_root, p))
+    if rp.startswith(real_root + os.sep):
+        return (True, rp[len(real_root) + 1:].replace(os.sep, "/"))
+    return (False, p)
+def sha(rel):
     try:
-        with open(os.path.join(ROOT, p), "rb") as f: return hashlib.sha256(f.read()).hexdigest()
-    except OSError: return None
-files = [x for x in os.environ["HFILES"].split(",") if x]
+        with open(os.path.join(real_root, rel), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+raw_files = [x for x in os.environ["HFILES"].split(",") if x]
+normed = [norm_bind(f) for f in raw_files]
+outside = [raw_files[i] for i, (ok, _) in enumerate(normed) if not ok]
+if outside:
+    raise SystemExit("error: HOROS-CLI-NOFILE 바인딩할 파일이 프로젝트 루트 밖입니다 (bind targets outside project root): " + ", ".join(outside))
+files = [rel for _, rel in normed]
 binds = {f: sha(f) for f in files}
 missing = [f for f, h in binds.items() if h is None]
 if missing:
@@ -239,43 +276,45 @@ if missing:
                      + ", ".join(missing))
 n = 0
 if os.path.exists(path):
-    for line in open(path):
-        line = line.strip()
-        if not line: continue
-        try: r = json.loads(line)
-        except Exception: continue
-        i = str(r.get("id", ""))
-        if i.startswith("C") and i[1:].isdigit(): n = max(n, int(i[1:]))
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line: continue
+            try: r = json.loads(line)
+            except Exception: continue
+            i = str(r.get("id", "")) if isinstance(r, dict) else ""
+            if i.startswith("C") and i[1:].isdigit(): n = max(n, int(i[1:]))
 rec = {"id": "C%d" % (n + 1), "kind": os.environ["HKIND"], "assert": os.environ["HASSERT"],
        "evidence_files": files, "binds": binds,
        "refs": refs,
        "claims_true": {k: True for k in flags},
        "date": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-with open(path, "a") as f:
-    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+raw = json.dumps(rec, ensure_ascii=False)
+if horos_core:
+    horos_core.locked_append(path, raw)
+else:
+    with open(path, "a", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        f.write(raw + "\n")
 print("recorded %s (%s, binds %d file(s)) -> %s" % (rec["id"], rec["kind"], len(files), path))
 PY
     ;;
+
   install)
-    # D12 — deploy horos into a target project by REFERENCE (one central source), instead of copying
-    # hooks/ in (a copy drifts — see README). Writes hook commands that invoke THIS horos's hooks via
-    # a $HOME-relative path; Claude Code sets CLAUDE_PROJECT_DIR=<target> for hook runs, so lib.sh
-    # resolves HOROS_ROOT=<target> and state/decisions stay per-project. Fail-open if central horos is
-    # absent/moved; idempotent + migrates (strips any prior horos entries before re-pointing).
-    harness=claude                          # D23: --harness agy generates an agy .agents/hooks.json instead
+    # D12, D23, D28, D31 — deploy horos into a target project by REFERENCE for claude | agy | codex.
+    harness=claude
     while [ "${1:-}" ]; do case "$1" in
       --harness) harness="${2:-claude}"; shift 2 ;;
       --harness=*) harness="${1#--harness=}"; shift ;;
       *) break ;;
     esac; done
+    case "$harness" in claude|agy|codex) ;; *)
+      echo "error: unknown harness '$harness' (allowed: claude, agy, codex)" >&2; exit 1 ;;
+    esac
     target="${1:-}"
-    [ -n "$target" ] || { echo "usage: horos install [--harness claude|agy] <target-project-dir>" >&2; exit 1; }
+    [ -n "$target" ] || { echo "usage: horos install [--harness claude|agy|codex] <target-project-dir>" >&2; exit 1; }
     [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
     if [ "$harness" = agy ]; then
-      # D23 — wire an Antigravity CLI (agy) project by reference: .agents/hooks.json routes agy's
-      # PreToolUse/PreInvocation through the central agy-adapter, which translates to/from horos's
-      # unchanged Claude-shaped judges. $HOME-relative path (agy runs commands via sh -c). Opt-in
-      # still needs .horos/ (run `horos init <target>`); idempotent (strips a prior "horos" key).
       HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
 import json, os
 src = os.path.abspath(os.environ["HOROS_SRC"]); target = os.path.abspath(os.environ["HOROS_TARGET"])
@@ -283,64 +322,66 @@ home = os.path.expanduser("~")
 portable = (src == home or src.startswith(home + os.sep))
 rel = src[len(home):].lstrip("/") if portable else None
 adapter = ('"$HOME/%s/hooks/agy-adapter.sh"' % rel) if portable else ('"%s/hooks/agy-adapter.sh"' % src)
+# D31: Antigravity 2.0 wires SessionStart (once per session) + nested systemMessage step
 block = {"horos": {
     "PreToolUse": [{"matcher": "*", "hooks": [
         {"type": "command", "command": adapter + " pre-tool", "timeout": 15}]}],
-    "PreInvocation": [
+    "SessionStart": [
         {"type": "command", "command": adapter + " session-start", "timeout": 10}],
-    "Stop": [                                # D25: decision + claim gates on the session's changes
+    "Stop": [
         {"type": "command", "command": adapter + " stop", "timeout": 20}]}}
 cfgdir = os.path.join(target, ".agents"); os.makedirs(cfgdir, exist_ok=True)
 cfgpath = os.path.join(cfgdir, "hooks.json")
 cfg = {}
 if os.path.exists(cfgpath):
-    try: cfg = json.load(open(cfgpath))
+    try: cfg = json.load(open(cfgpath, encoding="utf-8"))
     except Exception as e: raise SystemExit("error: target .agents/hooks.json is not valid JSON: %s" % e)
-cfg.pop("horos", None)                      # idempotent: drop prior horos hook, keep others
+cfg.pop("horos", None)
 cfg.update(block)
-with open(cfgpath, "w") as f:
+with open(cfgpath, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
 gi = os.path.join(target, ".gitignore")
-lines = open(gi).read().splitlines() if os.path.exists(gi) else []
+lines = open(gi, encoding="utf-8").read().splitlines() if os.path.exists(gi) else []
 if ".horos/" not in lines:
-    with open(gi, "a") as f:
+    with open(gi, "a", encoding="utf-8") as f:
         f.write(("\n" if (lines and lines[-1] != "") else "") + "# horos runtime state (machine-local)\n.horos/\n")
 print("installed horos (agy, by reference) -> %s/.agents/hooks.json" % target)
 print("  central adapter: %s" % (("$HOME/" + rel) if portable else src) + "/hooks/agy-adapter.sh")
-print("  events         : PreToolUse (scope + reversibility) + PreInvocation (brief) + Stop (finish + decision + claim)")
+print("  events         : PreToolUse (scope + reversibility) + SessionStart (brief) + Stop (finish + decision + claim)")
 print("  activate       : horos init %s   (creates .horos opt-in marker; mode starts warn)" % target)
 if not portable:
     print("  WARNING: central horos is not under $HOME — wrote an absolute path (may not resolve on another machine)")
-print("  note           : all 5 philosophies enforced (finish-the-work reads agy's transcriptPath for the last text, D26)")
+print("  note           : Antigravity 2.0 SessionStart + terminationReason abort-safety enabled (D31)")
 PY
       exit 0
     fi
-    HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
+
+    HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" HOROS_H="$harness" python3 - <<'PY'
 import json, os
 src = os.path.abspath(os.environ["HOROS_SRC"])
 target = os.path.abspath(os.environ["HOROS_TARGET"])
+harness = os.environ["HOROS_H"]
 home = os.path.expanduser("~")
 portable = (src == home or src.startswith(home + os.sep))
 rel = src[len(home):].lstrip("/") if portable else None
 def srcpath(name):
     return ('"$HOME/%s/hooks/%s"' % (rel, name)) if portable else ('"%s/hooks/%s"' % (src, name))
-def hookcmd(name):                       # fail-open: a missing/moved central horos never blocks the target
+def hookcmd(name):
     p = srcpath(name)
     return "[ -x %s ] && %s || true" % (p, p)
 pre = [
-    {"matcher": "Edit|Write|MultiEdit|NotebookEdit",   # D18: notebooks covered too
+    {"matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch",
      "hooks": [{"type": "command", "command": hookcmd("scope-guard.sh"), "timeout": 15}]},
     {"matcher": "Bash",
      "hooks": [{"type": "command", "command": hookcmd("reversibility-guard.sh"), "timeout": 15}]},
 ]
-stop = [
-    {"matcher": "*", "hooks": [
-        {"type": "command", "command": hookcmd("finish-the-work.sh"), "timeout": 15},
-        {"type": "command", "command": hookcmd("decision-guard.sh"), "timeout": 15},
-        {"type": "command", "command": hookcmd("claim-guard.sh"), "timeout": 20},
-    ]},
+stop_hooks = [
+    {"type": "command", "command": hookcmd("finish-the-work.sh"), "timeout": 15},
+    {"type": "command", "command": hookcmd("decision-guard.sh"), "timeout": 15},
+    {"type": "command", "command": hookcmd("claim-guard.sh"), "timeout": 20},
 ]
-sess = [                                 # D17: protocol self-injection at session start
+stop = [{"hooks": stop_hooks}] if harness == "codex" else [{"matcher": "*", "hooks": stop_hooks}]
+sess = [
     {"matcher": "startup|resume|clear|compact", "hooks": [
         {"type": "command", "command": hookcmd("session-brief.sh"), "timeout": 10},
     ]},
@@ -348,51 +389,60 @@ sess = [                                 # D17: protocol self-injection at sessi
 BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
 def is_horos(entry):
     return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
-cfgdir = os.path.join(target, ".claude"); os.makedirs(cfgdir, exist_ok=True)
-cfgpath = os.path.join(cfgdir, "settings.json")
+
+if harness == "codex":
+    cfgdir = os.path.join(target, ".codex")
+    cfgname = "hooks.json"
+else:
+    cfgdir = os.path.join(target, ".claude")
+    cfgname = "settings.json"
+os.makedirs(cfgdir, exist_ok=True)
+cfgpath = os.path.join(cfgdir, cfgname)
 cfg = {}
 if os.path.exists(cfgpath):
     try:
-        cfg = json.load(open(cfgpath))
+        cfg = json.load(open(cfgpath, encoding="utf-8"))
     except Exception as e:
-        raise SystemExit("error: target .claude/settings.json is not valid JSON: %s" % e)
+        raise SystemExit("error: target %s is not valid JSON: %s" % (cfgpath, e))
 hooks = cfg.setdefault("hooks", {})
-for ev in ("PreToolUse", "Stop", "SessionStart"):  # strip prior horos entries (idempotent + migrate old copy form)
+for ev in ("PreToolUse", "Stop", "SessionStart"):
     if ev in hooks:
         hooks[ev] = [e for e in hooks[ev] if not is_horos(e)]
 hooks.setdefault("PreToolUse", []).extend(pre)
 hooks.setdefault("Stop", []).extend(stop)
 hooks.setdefault("SessionStart", []).extend(sess)
-with open(cfgpath, "w") as f:
+with open(cfgpath, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
-gi = os.path.join(target, ".gitignore")  # .horos/ is runtime state, machine-local
-lines = open(gi).read().splitlines() if os.path.exists(gi) else []
+gi = os.path.join(target, ".gitignore")
+lines = open(gi, encoding="utf-8").read().splitlines() if os.path.exists(gi) else []
 if ".horos/" not in lines:
-    with open(gi, "a") as f:
+    with open(gi, "a", encoding="utf-8") as f:
         f.write(("\n" if (lines and lines[-1] != "") else "") + "# horos runtime state (machine-local)\n.horos/\n")
-print("installed horos (by reference) -> %s" % target)
-print("  central source : %s/hooks" % (("$HOME/" + rel) if portable else src))
-print("  enforcement    : scope-guard, reversibility-guard (PreToolUse) + finish/decision/claim (Stop)")
-print("  protocol       : session-brief (SessionStart) — injects the conventions card each session")
+if harness == "codex":
+    print("installed horos (codex, by reference) -> %s/.codex/hooks.json" % target)
+    print("  central source : %s/hooks" % (("$HOME/" + rel) if portable else src))
+    print("  enforcement    : scope-guard (incl. apply_patch) + reversibility-guard + finish/decision/claim")
+    print("  trust gate     : approve project hooks via `/hooks` in Codex CLI if prompted (D28)")
+else:
+    print("installed horos (by reference) -> %s" % target)
+    print("  central source : %s/hooks" % (("$HOME/" + rel) if portable else src))
+    print("  enforcement    : scope-guard, reversibility-guard (PreToolUse) + finish/decision/claim (Stop)")
+    print("  protocol       : session-brief (SessionStart) — injects the conventions card each session")
 if not portable:
     print("  WARNING: central horos is not under $HOME — wrote an absolute path that may not resolve")
     print("           on another machine. Move horos under $HOME for multimachine portability.")
 print("  verify         : horos doctor %s" % target)
-print("  note           : hooks load at session start — (re)open the target in Claude Code; mode starts warn.")
+print("  note           : hooks load at session start — mode starts warn.")
 PY
     ;;
+
   init)
-    # D19 — plugin-era adoption: create the ACTIVATION MARKER (.horos/) + mode=warn + gitignore.
-    # No settings.json surgery: a globally-enabled horos plugin picks the project up next
-    # session BECAUSE the marker exists (plugin-dispatch gate). Idempotent.
     target="${1:-$ROOT}"
     [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
     mkdir -p "$target/.horos"
     [ -f "$target/.horos/mode" ] || printf 'warn\n' > "$target/.horos/mode"
     gi="$target/.gitignore"
     if ! grep -qxF '.horos/' "$gi" 2>/dev/null; then
-      # D14: don't line-join onto a .gitignore that lacks a trailing newline (install had this
-      # guard; init did not). tail -c1 is empty iff the file already ends in a newline.
       [ -s "$gi" ] && [ -n "$(tail -c1 "$gi" 2>/dev/null)" ] && printf '\n' >> "$gi"
       { echo "# horos runtime state (machine-local)"; echo ".horos/"; } >> "$gi"
     fi
@@ -401,50 +451,117 @@ PY
     echo "  no plugin?  : horos install $target  (reference wiring, no plugin needed)"
     echo "  verify      : horos doctor $target"
     ;;
+
   uninstall)
-    # D20 — strip horos reference wiring from a target settings.json (the plugin path takes
-    # over next session if enabled + marker present; or horos detaches entirely).
+    # D20, D32 — strip horos reference wiring for claude | agy | codex | all.
+    harness=claude
+    while [ "${1:-}" ]; do case "$1" in
+      --harness) harness="${2:-claude}"; shift 2 ;;
+      --harness=*) harness="${1#--harness=}"; shift ;;
+      *) break ;;
+    esac; done
+    case "$harness" in claude|agy|codex|all) ;; *)
+      echo "error: unknown harness '$harness' (allowed: claude, agy, codex, all)" >&2; exit 1 ;;
+    esac
     target="${1:-}"
-    [ -n "$target" ] || { echo "usage: horos uninstall <target-project-dir>" >&2; exit 1; }
+    [ -n "$target" ] || { echo "usage: horos uninstall [--harness claude|agy|codex|all] <target-project-dir>" >&2; exit 1; }
     [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
-    HOROS_TARGET="$target" python3 - <<'PY'
+    HOROS_TARGET="$target" HOROS_H="$harness" python3 - <<'PY'
 import json, os
 target = os.path.abspath(os.environ["HOROS_TARGET"])
-cfgpath = os.path.join(target, ".claude", "settings.json")
-if not os.path.exists(cfgpath):
-    print("nothing to remove (no .claude/settings.json)"); raise SystemExit
-try:
-    cfg = json.load(open(cfgpath))
-except Exception as e:
-    raise SystemExit("error: target .claude/settings.json is not valid JSON: %s" % e)
+harness = os.environ["HOROS_H"]
 BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
+
 def is_horos(entry):
     return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
-hooks = cfg.get("hooks") or {}
-removed = 0
-for ev in list(hooks.keys()):
-    kept = [e for e in hooks[ev] if not is_horos(e)]
-    removed += len(hooks[ev]) - len(kept)
-    if kept:
-        hooks[ev] = kept
-    else:
-        del hooks[ev]
-if not hooks and "hooks" in cfg:
-    del cfg["hooks"]
-with open(cfgpath, "w") as f:
-    json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
-print("removed %d horos hook entr%s -> %s" % (removed, "y" if removed == 1 else "ies", cfgpath))
+
+def clean_hook_map(cfgpath, label):
+    if not os.path.exists(cfgpath):
+        if harness != "all":
+            print("nothing to remove (no %s)" % label)
+        return
+    try:
+        cfg = json.load(open(cfgpath, encoding="utf-8"))
+    except Exception as e:
+        raise SystemExit("error: target %s is not valid JSON: %s" % (label, e))
+    hooks = cfg.get("hooks") or {}
+    removed = 0
+    for ev in list(hooks.keys()):
+        kept = [e for e in hooks[ev] if not is_horos(e)]
+        removed += len(hooks[ev]) - len(kept)
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    if not hooks and "hooks" in cfg:
+        del cfg["hooks"]
+    with open(cfgpath, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
+    print("removed %d horos hook entr%s -> %s" % (removed, "y" if removed == 1 else "ies", cfgpath))
+
+def clean_agy(cfgpath):
+    if not os.path.exists(cfgpath):
+        if harness != "all":
+            print("nothing to remove (no .agents/hooks.json)")
+        return
+    try:
+        cfg = json.load(open(cfgpath, encoding="utf-8"))
+    except Exception as e:
+        raise SystemExit("error: target .agents/hooks.json is not valid JSON: %s" % e)
+    had = 1 if "horos" in cfg else 0
+    cfg.pop("horos", None)
+    with open(cfgpath, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2); f.write("\n")
+    print("removed %d horos hook group -> %s" % (had, cfgpath))
+
+if harness in ("claude", "all"):
+    clean_hook_map(os.path.join(target, ".claude", "settings.json"), ".claude/settings.json")
+if harness in ("codex", "all"):
+    clean_hook_map(os.path.join(target, ".codex", "hooks.json"), ".codex/hooks.json")
+if harness in ("agy", "all"):
+    clean_agy(os.path.join(target, ".agents", "hooks.json"))
 print("  note: hooks unload next session; .horos/ marker kept (plugin takes over if enabled)")
 PY
     ;;
+
+  prune)
+    # D32 — bound unbounded runtime growth in .horos/ (violations.log, claims.jsonl, agy_changed.*, guards).
+    days=14; prune_all=0; target=""
+    while [ "${1:-}" ]; do case "$1" in
+      --days) days="${2:-14}"; shift 2 ;;
+      --days=*) days="${1#--days=}"; shift ;;
+      --all) prune_all=1; shift ;;
+      *) target="$1"; shift ;;
+    esac; done
+    PT="${target:-$ROOT}"; PS="$PT/.horos"
+    PYTHONPATH="$HERE" HP_STATE="$PS" HP_DAYS="$days" HP_ALL="$prune_all" python3 - <<'PY'
+import os, horos_core
+res = horos_core.prune_runtime(
+    os.environ["HP_STATE"],
+    keep_days=int(os.environ["HP_DAYS"]),
+    prune_all=(os.environ["HP_ALL"] == "1"),
+)
+print(
+    "pruned %s -> violations_dropped=%d (kept=%d) claims_dropped=%d agy_temp_removed=%d guards_reset=%d"
+    % (
+        os.environ["HP_STATE"],
+        res["violations_dropped"],
+        res["violations_kept"],
+        res["claims_dropped"],
+        res["agy_temp_removed"],
+        res["guards_reset"],
+    )
+)
+PY
+    ;;
+
   log)    tail -n "${1:-20}" "$S/violations.log" 2>/dev/null || echo "(no violations logged)" ;;
+
   doctor)
-    DT="${1:-$ROOT}"; DS="$DT/.horos"          # D12: optional [target] — point doctor at a consuming project
+    DT="${1:-$ROOT}"; DS="$DT/.horos"
     dmode=""; [ -f "$DS/mode" ] && dmode="$(tr -d '[:space:]' < "$DS/mode" 2>/dev/null)"; [ -n "$dmode" ] || dmode=warn
     echo "root : $DT"
-    # central version stamp (absent/unreadable VERSION -> unknown, never an error)
     echo "vers : $([ -f "$CENTRAL/VERSION" ] && tr -d '[:space:]' < "$CENTRAL/VERSION" 2>/dev/null || echo unknown)"
-    # D19/D20: plugin packaging + per-target activation/precedence
     echo "plugn: $([ -f "$CENTRAL/.claude-plugin/plugin.json" ] && echo "packaged (.claude-plugin)" || echo "not packaged")"
     echo "activ: $([ -d "$DS" ] && echo ".horos present (plugin-eligible)" || echo ".horos absent — run: horos init $DT")"
     if grep -qE 'scope-guard\.sh|parent-bridge\.sh' "$DT/.claude/settings.json" 2>/dev/null; then
@@ -457,31 +574,88 @@ PY
     echo "decns: $([ -f "$DT/decisions.jsonl" ] && tr -cd '\n' < "$DT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
     echo "claim: $([ -f "$DS/claims.jsonl" ] && tr -cd '\n' < "$DS/claims.jsonl" | wc -c | tr -d ' ' || echo 0) deposited (runtime)"
     echo "skill: $([ -f "$DT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
-    echo "hooks:"
-    # D12: a consuming project has no local hooks/ — it references central horos via settings.json.
-    # Report [OK] for a hook resolvable either locally OR by that reference.
     HOROS_DT="$DT" python3 - <<'PY'
 import json, os, re
 dt = os.path.abspath(os.environ["HOROS_DT"])
+harnesses = []
 cmds = []
-p = os.path.join(dt, ".claude", "settings.json")
-if os.path.exists(p):
+drifts = []
+
+def inspect_claude_like(relpath, tag):
+    p = os.path.join(dt, relpath)
+    if not os.path.exists(p):
+        return
     try:
-        cfg = json.load(open(p))
-        for entries in (cfg.get("hooks") or {}).values():
-            for e in entries:
-                for hk in e.get("hooks", []):
-                    c = hk.get("command")
-                    if c: cmds.append(c)
+        cfg = json.load(open(p, encoding="utf-8"))
     except Exception:
-        pass
+        drifts.append("%s: invalid JSON" % relpath)
+        return
+    found = False
+    for ev, entries in (cfg.get("hooks") or {}).items():
+        for e in entries:
+            matcher = str(e.get("matcher") or "")
+            for hk in e.get("hooks", []):
+                c = str(hk.get("command") or "")
+                if c:
+                    cmds.append(c)
+                if "scope-guard.sh" in c or "parent-bridge.sh" in c:
+                    found = True
+                    missing_m = [t for t in ("NotebookEdit", "apply_patch") if t not in matcher]
+                    if missing_m:
+                        drifts.append("%s: edit matcher missing %s (refresh with: horos install%s %s)"
+                                      % (relpath, "|".join(missing_m),
+                                         " --harness codex" if tag == "codex" else "", dt))
+    if found:
+        harnesses.append(tag)
+
+inspect_claude_like(".claude/settings.json", "claude")
+inspect_claude_like(".codex/hooks.json", "codex")
+
+agyp = os.path.join(dt, ".agents", "hooks.json")
+agy_adapter = None
+if os.path.exists(agyp):
+    try:
+        acfg = json.load(open(agyp, encoding="utf-8"))
+        hb = acfg.get("horos")
+        if isinstance(hb, dict):
+            harnesses.append("agy")
+            if "PreInvocation" in hb and "SessionStart" not in hb:
+                drifts.append(".agents/hooks.json: uses legacy PreInvocation instead of SessionStart (refresh with: horos install --harness agy %s)" % dt)
+            for entries in hb.values():
+                for e in entries:
+                    if isinstance(e, dict) and "hooks" in e:
+                        for hk in e["hooks"]:
+                            c = str(hk.get("command") or "")
+                            m = re.search(r'"([^"]*agy-adapter\.sh)"', c)
+                            if m: agy_adapter = os.path.expandvars(os.path.expanduser(m.group(1)))
+                    elif isinstance(e, dict) and "command" in e:
+                        c = str(e.get("command") or "")
+                        m = re.search(r'"([^"]*agy-adapter\.sh)"', c)
+                        if m: agy_adapter = os.path.expandvars(os.path.expanduser(m.group(1)))
+    except Exception:
+        drifts.append(".agents/hooks.json: invalid JSON")
+
+clip = os.path.join(dt, ".horos", "cli.path")
+if os.path.isfile(clip):
+    raw_cli = open(clip, encoding="utf-8").read().strip()
+    if raw_cli and not os.access(raw_cli, os.X_OK):
+        drifts.append(".horos/cli.path: points to non-executable path (%s)" % raw_cli)
+
+print("harns: %s" % (", ".join(harnesses) if harnesses else "none (plugin or local hooks only)"))
+print("hooks:")
+
 def ref_path(name):
     for c in cmds:
         if name in c:
             m = re.search(r'"([^"]*' + re.escape(name) + r')"', c)
             if m:
                 return os.path.expandvars(os.path.expanduser(m.group(1)))
+    if agy_adapter:
+        cand = os.path.join(os.path.dirname(agy_adapter), name)
+        if os.path.exists(cand):
+            return cand
     return None
+
 for h in ("scope-guard", "reversibility-guard", "finish-the-work", "decision-guard", "claim-guard"):
     name = h + ".sh"
     local = os.path.join(dt, "hooks", name)
@@ -493,9 +667,12 @@ for h in ("scope-guard", "reversibility-guard", "finish-the-work", "decision-gua
             print("  [OK] %-22s ref %s" % (h, os.path.dirname(rp)))
         else:
             print("  [MISS] %-20s" % h)
+
+if drifts:
+    print("drift:")
+    for d in drifts:
+        print("  [DRIFT] %s" % d)
 PY
-    # D16: surface what the gates saw — counts by code (5th col; pre-D15 lines bucket by rule),
-    # plus how often something was silently let through (HOROS-TEL-*).
     echo "health:"
     if [ -f "$DS/violations.log" ]; then
       awk -F'\t' '{ c = ($5 != "") ? $5 : "(uncoded/" $3 ")"; n[c]++ } END { for (k in n) printf "  %5d  %s\n", n[k], k }' \
@@ -507,6 +684,7 @@ PY
       echo "  (no violations logged)"
     fi
     ;;
+
   help|*)
     cat <<'EOF'
 horos — agent discipline harness (philosophies 1/2/3/4/5)
@@ -517,11 +695,12 @@ horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos aporia A<n> "<p1>|<p2>" <why_unresolved> <trigger> [files]   externalize a held tension (philosophy 2)
   horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
   horos claim show | clear
-  horos install <target>      wire a project to THIS central horos by reference, no copy (D12)
+  horos install [--harness claude|agy|codex] <target>   wire a project by reference, no copy (D12/D23/D28/D31)
   horos init [target]         plugin-era opt-in: create .horos marker + mode=warn + gitignore (D19)
-  horos uninstall <target>    strip reference wiring (plugin takes over if enabled, D20)
+  horos uninstall [--harness claude|agy|codex|all] <target>   strip reference wiring (D20/D32)
+  horos prune [--days N | --all] [target]   prune aged runtime logs/claims/temp files (D32)
   horos log [N]               recent violations
-  horos doctor [target]       installation check (wiring, version, plugin, activation, health)
+  horos doctor [target]       installation check (wiring, harnesses, drift, version, health)
 EOF
     ;;
 esac
