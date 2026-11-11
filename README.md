@@ -1,147 +1,183 @@
-# horos (v0.5.0)
+# horos (v0.5.1)
 
-작업 철학을 에이전트가 우회할 수 없도록 결정론적 훅으로 강제하는 멀티 하네스(Claude Code, Antigravity 2.0, Codex CLI) 규율 계층이다.
+[![CI](https://github.com/mitmirsein/horos/actions/workflows/ci.yml/badge.svg)](https://github.com/mitmirsein/horos/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Zero Dependencies](https://img.shields.io/badge/deps-bash%20%2B%20python3%20stdlib-success.svg)](#platform-compatibility--requirements)
 
-이름 `horos`(ὅρος, 그리스어 경계, 정의, 계약 조건)는 두 가지 원리를 함께 담고 있다: 작업 반경의 경계를 먼저 수렴시키고(철학 3), 입출력과 의사결정을 명시적 계약으로 묶는다(철학 1, 철학 2).
+**[English](README.md)** | **[한국어](README.ko.md)**
 
-## 배경과 설계 목적
+Deterministic hook-based discipline layer for coding agents across **Claude Code**, **Antigravity 2.0**, **OpenAI Codex CLI**, and generic **POSIX exit-code** harnesses.
 
-[fablize](https://github.com/fivetaku/fablize)와 [prometheus](https://github.com/tmdgusya/prometheus)가 입증한 핵심 교훈은 명확하다:
+Prompts and `AGENTS.md` files decay under long context windows. `horos` (Greek ὅρος: boundary, definition, contractual term) enforces engineering boundaries mechanically at tool-call and turn-stop boundaries using zero external packages and zero extra LLM calls (`bash` + `python3` standard library only).
 
-> 에이전트의 자발적 의지로 호출하는 게이트는 신뢰할 수 없다. 에이전트가 스스로 완료를 선언하는 대신 시스템이 결정론적으로 판정해야 한다.
+---
 
-5가지 작업 철학 중 기계 판정이 가능한 4가지(철학 2, 3, 4, 5)와 감사층(`claim-guard`)은 `python3` 표준 라이브러리 기반 훅으로 강제하고, 순수 구문 검사로 환원되지 않는 설계 규율(철학 1)만 `contract-first` 스킬로 안내한다.
+## 30-Second Quickstart (Lite Tier: Zero Ledger Ceremony)
 
-## 5대 철학 및 강제 프록시 매핑
+You do **not** need decision ledgers (`decisions.jsonl`) or audit claims (`claim`) to get immediate value. Out of the box, `horos` protects your workspace with **file-scope confinement**, **destructive shell command blocking**, and **premature-stop detection**.
 
-| 작업 철학 | 기계 판정 프록시 | 강제 지점 | 상태 |
+```bash
+# 1. Clone once and link the CLI onto PATH (zero pip/npm packages needed)
+git clone https://github.com/mitmirsein/horos.git ~/.horos-src
+mkdir -p ~/.local/bin && ln -sfn ~/.horos-src/hooks/horos ~/.local/bin/horos
+
+# 2. Wire hooks by reference and opt in (starts in safe 'warn' mode)
+horos install ~/path/to/my-project
+horos init ~/path/to/my-project
+
+# 3. Confine edits to allowed directories and promote to 'block' mode
+cd ~/path/to/my-project
+horos scope set "src/**" "tests/**"
+horos mode block
+horos doctor
+```
+
+---
+
+## Progressive Adoption (Lite -> Ledger -> Strict)
+
+Adopt only the enforcement depth your project needs:
+
+| Stage | Mode | What You / Your Agent Do | What `horos` Enforces Deterministically |
 |---|---|---|---|
-| **2. 결정 외화** | 변경 코드 **주석**의 `D<n>`(결정) 및 `A<n>`(아포리아) 참조가 `decisions.jsonl`에 완비되었는가 (문자열 리터럴 및 URL 제외, D29) | `Stop` (`decision-guard`) | 활성 (`warn`/`block`/`strict`) |
-| **3. 경계 수렴** | 수정 대상 파일(`realpath` 정규화)이 선언된 `scope` 허용 목록 안에 속하는가 (`..` 우회 및 심링크 탈출 차단, `*` 대 `**` 세그먼트 구분, D29) | `PreToolUse` (`Edit\|Write\|MultiEdit\|NotebookEdit\|apply_patch`) | 활성 (`warn`/`block`/`strict`) |
-| **4. 가역성** | 셸 명령(인라인 `bash -c`, `eval`, `python -c` 포함)이 비가역 파괴 패턴과 일치하는가 (D30) | `PreToolUse` (`Bash`) | 활성 (`warn`/`block`/`strict`) |
-| **5. 완료 정의** | 응답 말미가 실행 없는 작업 약속으로 끝나거나, 도구 호출 0회 상태에서 완료를 선언했는가 (D30) | `Stop` (`finish-the-work`) | 활성 (`warn`/`block`/`strict`) |
-| **1. 불신 및 계약** | 의미값 재조립, 범위 제한(clamp), 경계값 4종 테스트 작성 | `contract-first` 스킬 | 규율층 안내 |
-| **감사층** (`claim-gate`) | 에이전트가 제출한 `claim`이 스키마, `sha256` 해시 신선도, 내부 불변식, 원장 교차참조를 충족하는가 (D9, D21) | `Stop` (`claim-guard`) | 활성 (`warn`/`block`/`strict`) |
+| **1. Observe** | `warn` (default) | Run `horos init` | Logs violations to `.horos/violations.log` and emits non-blocking warnings |
+| **2. Lite Guardrails** | `block` | Optionally declare `horos scope set ...` | Blocks out-of-scope file edits (`scope-guard`), destructive shell/subshell commands (`reversibility-guard`), and unexecuted promises or zero-evidence completion claims (`finish-the-work`) |
+| **3. Decision Ledger** | `block` | Record key trade-offs via `horos decide D1 ...` and cite `# D1` in code comments | Stage 2 + blocks broken or incomplete `D-id` / `A-id` comment references against `decisions.jsonl` (`decision-guard`) |
+| **4. Full Audit** | `strict` | Deposit `sha256`-bound claims via `horos claim completion ...` | Stage 3 + requires ledger references and fresh file-hash claims on non-trivial (`>= 8` added lines) code changes (`claim-guard`) |
 
-감사층(`claim-guard`)은 **번역기와 판사의 분리** 원칙을 따른다. 에이전트(LLM)가 작업 결과를 구조화된 주장(`horos claim`)으로 기록하면, 훅은 네트워크나 LLM 호출 없이 오직 표준 라이브러리만으로 형식, 파일 해시 일치 여부, 교차참조 무결성을 판정한다. 의미적 진리 자체는 판정 대상이 아니므로(형식을 갖춘 거짓 주장은 통과함), 커버리지 누락은 기본 `warn` 등급으로 동작하며 `strict` 모드에서만 차단으로 승격된다.
+---
 
-## 단계적 강제 모드 (`warn` -> `block` -> `strict`)
+## Why Deterministic Hooks?
 
-- **`warn`**(기본): 위반 시 사용자와 모델에게 경고를 표시하고 실행은 허용한다. 초기 도입 및 오탐 점검 단계에 적합하다.
-- **`block`**: 명확한 규율 위반(범위 밖 편집, 파괴 명령, 미정의 결정 참조, 약속 후 미실행, 깨진 감사 주장)을 즉시 차단한다 (`PreToolUse` 거부, `Stop` 턴 연장, `exitcode` 하네스 종료 코드 `2`).
-- **`strict`**(D18): `block` 차단에 더해 권고 등급 경로(`HOROS-DEC-MISSING`, `HOROS-CLM-MISSING`)까지 차단으로 승격하고, 세션 루프 가드 허용 횟수를 2회에서 4회로 확장한다.
+Prior agent harnesses ([fablize](https://github.com/fivetaku/fablize), [prometheus](https://github.com/tmdgusya/prometheus)) established a clear rule:
 
-```bash
-hooks/horos mode show          # 현재 강제 모드 조회
-hooks/horos log                # 최근 위반 및 텔레메트리 로그 확인
-hooks/horos mode block         # 검증 후 차단 모드 승격
-hooks/horos mode strict        # 하위 모델 대상 완전 규약 강제
-hooks/horos prune --days 14    # 14일 경과 런타임 로그/임시 상태 정리 (D32)
-```
+> Voluntary self-check instructions inside prompts cannot be trusted when context pressure rises. Agents propose; deterministic system hooks judge.
 
-## 판정 메시지 계약 및 코드 레지스트리 (D15)
+`horos` enforces four mechanical gates plus a `sha256`-bound audit tier through `python3` stdlib hooks, while keeping pure design judgment (input clamping, boundary testing) in the companion `contract-first` skill.
 
-모든 판정과 CLI 오류는 모델이 추론 없이 즉시 복구 명령을 실행할 수 있도록 단일 출력 계약을 준수한다:
+## Philosophy-to-Hook Mapping
+
+| Principle | Deterministic Proxy | Hook Event | Tiers |
+|---|---|---|---|
+| **Boundary Convergence** | Normalized target path (`realpath`) matches declared `scope` globs; blocks `..` traversal and symlink escapes; distinguishes `*` vs `**` segments (D29) | `PreToolUse` (`Edit\|Write\|MultiEdit\|NotebookEdit\|apply_patch`) | `warn` / `block` / `strict` |
+| **Reversibility** | Shell command (including unwrapped `bash -c`, `sh -c`, `eval`, `python -c` payloads) matches destructive patterns (`rm -rf`, `git reset --hard`, `git push --force`, `git checkout .`, D30) | `PreToolUse` (`Bash`) | `warn` / `block` / `strict` |
+| **Definition of Done** | Assistant turn ends with an unexecuted promise or claims completion with zero tool invocations (D30) | `Stop` (`finish-the-work`) | `warn` / `block` / `strict` |
+| **Decision Externalization** | `D<n>` (decision) and `A<n>` (aporia: unresolved tension) IDs cited in code **comments** exist and are complete in `decisions.jsonl`, ignoring string literals and URLs (D29) | `Stop` (`decision-guard`) | `warn` / `block` / `strict` |
+| **Claim Audit Tier** | Deposited `horos claim` passes schema check, `sha256` file-bind freshness, flag invariants (`tests_added`), and ledger cross-reference checks (D9, D21) | `Stop` (`claim-guard`) | `warn` / `block` / `strict` |
+| **Contract-First Design** | Untrusted-by-default boundaries, range clamping, 4-category boundary unit tests | `contract-first` skill | Advisory skill |
+
+## Self-Executing Remediation Contract (D15)
+
+Every block, warning, and CLI validation error follows a single machine-actionable format with a concrete recovery command pre-filled for the agent:
 
 ```text
-[horos:block|warn] <CODE> <한국어 설명>. Action: <영어 명령형 1줄>. 예: <실값이 채워진 복구 명령>
+[horos:block|warn] <CODE> <Korean summary>. Action: <English imperative>. 예: <pre-filled command>
 ```
 
-| 계열 | 코드 | 설명 |
+| Family | Codes | Purpose |
 |---|---|---|
-| 판정 | `HOROS-SCOPE-OUT`, `HOROS-REV-DESTRUCT`, `HOROS-FIN-PROMISE`, `HOROS-FIN-NOEVIDENCE`, `HOROS-DEC-BROKEN`, `HOROS-DEC-MISSING`, `HOROS-CLM-BROKEN`, `HOROS-CLM-MISSING` | 각 가드의 규율 위반 판정 |
-| CLI (D14) | `HOROS-CLI-BADID`, `DUPID`, `BADKIND`, `BADFLAG`, `BADREF`, `NOREF`, `NOFILE`, `ROOT` | 적재 시점 즉시 검증 오류 |
-| 텔레메트리 (D16) | `HOROS-TEL-MALFORMED`, `STALE-DROP`, `LOOPGUARD`, `PYFAIL` | fail-open 침묵 통과 기록 (`horos doctor` 집계) |
+| Guard Judgments | `HOROS-SCOPE-OUT`, `HOROS-REV-DESTRUCT`, `HOROS-FIN-PROMISE`, `HOROS-FIN-NOEVIDENCE`, `HOROS-DEC-BROKEN`, `HOROS-DEC-MISSING`, `HOROS-CLM-BROKEN`, `HOROS-CLM-MISSING` | Pre-tool denials and stop-turn continuations |
+| CLI Validation (D14) | `HOROS-CLI-BADID`, `DUPID`, `BADKIND`, `BADFLAG`, `BADREF`, `NOREF`, `NOFILE`, `ROOT` | Deposit-time schema and hash validation |
+| Fail-Open Telemetry (D16) | `HOROS-TEL-MALFORMED`, `STALE-DROP`, `LOOPGUARD`, `PYFAIL` | Silent-pass observability surfaced by `horos doctor` |
 
-## 디렉터리 구조
+---
 
-```text
-.claude-plugin/
-  plugin.json            플러그인 매니페스트 (version = VERSION 동기화, D19)
-  marketplace.json       단일 플러그인 마켓플레이스 정의
-.claude/
-  settings.json          저장소 자체 도그푸딩 배선
-  commands/, skills/     루트 정본을 가리키는 상대 심링크
-commands/                /scope, /horos-mode 슬래시 커맨드 정본 (D32 실행 검증 폴백 포함)
-skills/contract-first/   SKILL.md (철학 1 규율층 스킬 정본)
-hooks/
-  horos_core.py          공유 표준 라이브러리 코어: 루트 해석, realpath 정규화, 세그먼트 글로브, flock 잠금, 패치/주석 파서 (D27~D32)
-  lib.sh                 공통 셸 래퍼: 하네스 중립 루트 해석, claude/exitcode 방출 채널, 루프 가드, 로깅
-  scope-guard.sh         철학 3: 경계 수렴 (Edit|Write|MultiEdit|NotebookEdit|apply_patch)
-  reversibility-guard.sh 철학 4: 비가역 파괴 명령 차단 (서브셸 언래핑 포함)
-  finish-the-work.sh     철학 5: 약속 미실행 및 무증거 완료 선언 차단
-  decision-guard.sh      철학 2: 결정(D-id) 및 아포리아(A-id) 주석 참조 무결성 검증
-  claim-guard.sh         감사층: 제출된 claim의 구조, 해시 신선도, 불변식, 교차참조 검증
-  session-brief.sh       SessionStart 시점 규약 카드(15줄 이하) 자동 주입 (D17)
-  agy-adapter.sh         Antigravity 2.0 양방향 입출력 어댑터 (SessionStart, terminationReason 안전 게이트, 증분 줄 수 계산, D23~D31)
-  parent-bridge.sh       상위 워크스페이스 브리지 (하위 horos 작업만 선별 위임, D11)
-  plugin-dispatch.sh     글로벌 플러그인 진입점 (.horos 옵트인 및 로컬 배선 우선순위 게이트, D19/D20)
-  hooks.json             플러그인 훅 매니페스트
-  horos                  통합 CLI (scope, mode, decide, aporia, claim, install, init, uninstall, prune, log, doctor)
-VERSION                  중앙 버전 스탬프 (0.5.0)
-decisions.jsonl          철학 2 공유 원장 (커밋 및 동기화 대상)
-tests/
-  run.sh                 전 계층 단위 및 경계값 검증 스위트 (픽스처 무결성 사전 검증 포함)
-  fixtures/*.jsonl       합성 트랜스크립트 픽스처 20종
-```
+## Multi-Harness Setup
 
-## 멀티 하네스 설치 안내
+`horos` wires hooks **by `$HOME`-relative reference** rather than copying scripts into every repository, preventing hook drift across projects and synced machines (D12).
 
-horos는 외부 패키지 없이 순수 `bash`와 `python3` 표준 라이브러리만으로 동작하며, 대상 프로젝트에 코드를 복사하지 않고 중앙 저장소를 `$HOME` 상대 경로로 참조 연결한다 (D12).
-
-### 1. Claude Code (플러그인 또는 참조 배선)
+### 1. Claude Code (Plugin or Reference Wiring)
 
 ```bash
-# 방법 A: 글로벌 플러그인 등록 후 프로젝트별 옵트인 마커 생성 (권장)
-claude plugin marketplace add ~/Desktop/MS_Dev.nosync/horos
+# Option A: Install global plugin from GitHub, then opt in per project (recommended)
+claude plugin marketplace add mitmirsein/horos
 claude plugin install horos@horos
-hooks/horos init ~/path/to/project
+horos init ~/path/to/project
 
-# 방법 B: 플러그인 없이 대상 .claude/settings.json 에 참조 배선 등록
-hooks/horos install ~/path/to/project
-hooks/horos doctor ~/path/to/project
+# Option B: Reference wiring in target .claude/settings.json without global plugin
+horos install ~/path/to/project
+horos init ~/path/to/project
+horos doctor ~/path/to/project
 ```
 
 ### 2. Antigravity 2.0 (`--harness agy`, D23/D31)
 
-`hooks/agy-adapter.sh`가 Antigravity 2.0의 훅 입출력(`SessionStart` 중첩 `systemMessage`, `PreToolUse`, `Stop`의 `terminationReason` 종료 사유 분기 및 실제 추가 줄 수 계산)을 양방향 번역한다.
+`hooks/agy-adapter.sh` translates Antigravity 2.0 hook payloads bidirectionally (`SessionStart` nested `systemMessage`, `PreToolUse` permission decisions, `Stop` `terminationReason` abort-safety so `USER_CANCELED` / `ERROR` / `MAX_*` never trap the session, and incremental line-delta tracking).
 
 ```bash
-hooks/horos install --harness agy ~/path/to/project   # 대상 .agents/hooks.json 생성 및 갱신
-hooks/horos init ~/path/to/project                    # .horos 옵트인 마커 생성
+horos install --harness agy ~/path/to/project   # writes .agents/hooks.json
+horos init ~/path/to/project                    # creates .horos opt-in marker
 ```
 
-### 3. Codex CLI (`--harness codex`, D28)
+### 3. OpenAI Codex CLI (`--harness codex`, D28)
 
-`hooks/lib.sh`와 `hooks/horos_core.py`는 `CLAUDE_PROJECT_DIR`이 없는 환경에서도 `HOROS_PROJECT_DIR`, 훅 입력 JSON의 `cwd`, 프로세스 작업 디렉터리의 Git 루트 순으로 대상 프로젝트를 자동 식별하며, Codex 고유 편집 도구인 `apply_patch` 패치 본문을 직접 파싱한다.
+Resolves the target root automatically without `CLAUDE_PROJECT_DIR` (`HOROS_PROJECT_DIR` -> payload `cwd` -> Git/ancestral `.horos` root) and parses multi-file `apply_patch` payloads directly in both `scope-guard` and `Stop` guards.
 
 ```bash
-hooks/horos install --harness codex ~/path/to/project # 대상 .codex/hooks.json 생성 및 갱신
-hooks/horos init ~/path/to/project                    # .horos 옵트인 마커 생성
-# 참고: Codex CLI 최초 실행 시 `/hooks` 메뉴에서 프로젝트 훅 신뢰 승인이 필요할 수 있다.
+horos install --harness codex ~/path/to/project # writes .codex/hooks.json
+horos init ~/path/to/project                    # creates .horos opt-in marker
+# Note: approve project hooks via `/hooks` on first launch in Codex CLI if prompted.
 ```
 
-### 4. 일반 POSIX 종료 코드 하네스 (`HOROS_HARNESS=exitcode`, D28)
+### 4. Generic POSIX Exit-Code Runners (`HOROS_HARNESS=exitcode`, D28)
 
-표준 에러(`stderr`) 메시지와 종료 코드(`block` 시 `exit 2`, `warn` 시 `exit 0`) 규약을 따르는 외부 에이전트 러너에서는 환경변수 `HOROS_HARNESS=exitcode`와 `HOROS_PROJECT_DIR=<경로>`만 지정하면 별도 어댑터 없이 모든 가드를 그대로 사용할 수 있다.
-
-## 일상 사용 흐름
+Any custom agent loop or CI runner that treats `exit 2` + `stderr` as a block and `exit 0` as allow can invoke the guards directly without an adapter:
 
 ```bash
-/scope src/** tests/** README.md                                          # 1. 편집 허용 경계 선언
-hooks/horos decide D1 "<이유>" "<비용>" "<탈출구>" "src/app.py"           # 2. 설계 결정 외화 (# D1 주석 병기)
-hooks/horos aporia A1 "<극1>|<극2>" "<보류 이유>" "<재검토 조건>"         # 3. 보류된 긴장(아포리아) 기록
-hooks/horos claim completion "<수행 요약>" "src/app.py,tests/test_app.py" "D1" "tests_added,consistent_with_refs"
-hooks/horos doctor                                                        # 4. 배선, 드리프트, 텔레메트리 점검
-hooks/horos prune --days 14                                               # 5. 오래된 런타임 기록 정리
+HOROS_HARNESS=exitcode HOROS_PROJECT_DIR=/path/to/project ~/.horos-src/hooks/scope-guard.sh < payload.json
 ```
 
-## 한계와 설계 경계
+---
 
-- **감사층의 정직한 경계**: `claim-guard`는 주장의 구조, 파일 해시 신선도, 내부 불변식, 원장 교차참조만 결정론적으로 보증한다. 형식과 해시가 일치하는 의미상의 거짓 주장(coherent lie)은 기계가 가려낼 수 없으며, 실제 의미 검증은 단위 테스트와 코드 리뷰가 담당한다.
-- **정적 명령 스캐닝의 범위**: `reversibility-guard`는 `bash -c`, `sh -c`, `eval`, `python -c` 인라인 삭제와 주요 Git 작업트리 폐기 명령을 잡아내지만, 다단 변수 치환이나 외부 스크립트 파일 내부의 파괴 동작까지 정적으로 완전 분석하지는 않는다.
-- **장애 시 개방 원칙**(Fail-Open): 예상치 못한 트랜스크립트 스키마 변경이나 내부 예외 발생 시 세션을 인질로 잡지 않고 통과시키되, 반드시 `.horos/violations.log`에 `HOROS-TEL-*` 추적을 남겨 `horos doctor`에서 관측할 수 있게 한다 (D16).
+## CLI Cheat Sheet
 
-## 라이선스
+```bash
+horos scope set "src/**" "tests/**"                                       # Declare allowed edit globs
+horos scope show | clear                                                  # Inspect or remove scope boundary
+horos mode show | warn | block | strict                                   # Inspect or switch enforcement tier
+horos decide D1 "<why>" "<cost>" "<escape>" "src/app.py"                  # Record architectural decision
+horos aporia A1 "<pole1>|<pole2>" "<why_unresolved>" "<revisit_trigger>"  # Record unresolved design tension
+horos claim completion "<summary>" "src/app.py,tests/test_app.py" "D1" "tests_added,consistent_with_refs"
+horos doctor [target-dir]                                                 # Audit wiring, drift, and telemetry
+horos prune --days 14 [target-dir]                                        # Prune aged runtime logs and claims
+horos uninstall [--harness claude|agy|codex] <target-dir>                 # Cleanly remove horos hook entries
+bash tests/run.sh                                                         # Run 219-case hermetic test suite
+```
 
-MIT License ([LICENSE](LICENSE) 참조).
+## Repository Layout
+
+```text
+.claude-plugin/          Claude Code plugin & marketplace manifests (D19)
+.github/workflows/ci.yml Ubuntu + macOS CI test matrix (D33)
+commands/                /scope and /horos-mode slash command sources
+skills/contract-first/   SKILL.md for boundary & contract discipline
+hooks/
+  horos_core.py          Shared zero-dep Python stdlib core (realpath, globs, flock, parsers)
+  lib.sh                 Shared shell bootstrap, root resolution, loop guard, channel emitter
+  scope-guard.sh         PreToolUse file-boundary guard
+  reversibility-guard.sh PreToolUse destructive-command & subshell guard
+  finish-the-work.sh     Stop unexecuted-promise & zero-evidence guard
+  decision-guard.sh      Stop D-id / A-id comment reference verifier
+  claim-guard.sh         Stop sha256 claim freshness & invariant verifier
+  session-brief.sh       SessionStart compact protocol card injector (<= 15 lines)
+  agy-adapter.sh         Antigravity 2.0 bidirectional hook adapter
+  parent-bridge.sh       Parent workspace selective delegation bridge
+  plugin-dispatch.sh     Global plugin opt-in & precedence dispatcher
+  horos                  Unified management CLI
+tests/                   219 unit/boundary tests + 20 synthetic transcript fixtures
+```
+
+## Platform Compatibility & Requirements
+
+- **Supported OS**: macOS, Linux (`x86_64`, `aarch64`), and Windows **WSL2** (uses POSIX `fcntl.flock` for concurrent session-map and ledger locking; native Windows `cmd.exe` / PowerShell is not supported).
+- **Runtime**: `bash` and `python3` (>= 3.8), standard library only.
+
+## Honest Boundaries
+
+- **Structural Audit vs. Semantic Truth**: `claim-guard` verifies schema validity, `sha256` file-hash freshness, flag invariants, and ledger cross-references. A structurally valid claim bound to passing hashes cannot prove semantic correctness on its own; unit tests and code review remain essential.
+- **Static Shell Scanning Scope**: `reversibility-guard` unwraps `bash -c`, `sh -c`, `eval`, and `python -c` inline payloads and flags destructive Git/filesystem commands, but does not perform full multi-hop variable taint analysis or inspect external scripts invoked by path.
+- **Fail-Open Safety with Traceability**: Unexpected transcript schema changes or internal exceptions never deadlock an agent session; hooks fail open and record `HOROS-TEL-*` entries in `.horos/violations.log` surfaced by `horos doctor` (D16).
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

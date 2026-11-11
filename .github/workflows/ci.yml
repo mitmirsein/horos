@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python 3 stdlib availability
+        run: python3 --version
+
+      - name: Run full unit and boundary test suite
+        run: bash tests/run.sh
+
+      - name: Check tracked files for hardcoded user paths
+        run: |
+          if git grep -En '/Users/[A-Za-z0-9._-]+/' -- ':!decisions.jsonl'; then
+            echo "error: hardcoded macOS user home path detected in tracked files" >&2
+            exit 1
+          fi
+

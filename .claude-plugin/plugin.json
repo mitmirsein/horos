@@ -1,7 +1,7 @@
 {
   "name": "horos",
   "description": "Discipline layer that enforces 5 work philosophies on coding agents via deterministic hooks: scope boundary, decision externalization, reversibility, finish-the-work, and a claim audit tier. Ships the contract-first skill and /scope, /horos-mode commands.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": {
     "name": "mitmirsein"
   },
