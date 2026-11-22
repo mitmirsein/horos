@@ -1,4 +1,4 @@
-# horos (v0.5.2)
+# horos (v0.5.3)
 
 [![CI](https://github.com/mitmirsein/horos/actions/workflows/ci.yml/badge.svg)](https://github.com/mitmirsein/horos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -6,9 +6,9 @@
 
 [**English**](README.md) | [**한국어**](README.ko.md)
 
-작업 철학을 에이전트가 우회할 수 없도록 결정론적 훅으로 강제하는 멀티 하네스(Claude Code, Antigravity 2.0, Codex CLI, 범용 POSIX 러너) 규율 계층이다.
+**Claude Code**, **Antigravity 2.0**, **OpenAI Codex CLI**, 범용 **POSIX 러너** 전반에서 작동하는 무의존성 AI 에이전트 가드레일 겸 설계 원장이다.
 
-이름 `horos`(ὅρος, 그리스어 경계, 정의, 계약 조건)는 두 가지 원리를 함께 담고 있다: 작업 반경의 경계를 먼저 수렴시키고(철학 3), 입출력과 의사결정을 명시적 계약으로 묶는다(철학 1, 철학 2).
+이름 `horos`(ὅρος, 그리스어 경계, 정의, 계약 조건)는 두 가지 역할을 함께 담고 있다: 파일 경계 침범과 파괴적 명령을 물리적으로 차단하는 안전벨트(철학 3, 4, 5)이자 설계 결정과 보류된 고민(아포리아) 및 `sha256` 작업 증거를 세션을 넘어 보존하는 블랙박스 원장(철학 1, 2)이다.
 
 ---
 
@@ -53,7 +53,7 @@ horos doctor
 
 > 에이전트의 자발적 의지로 호출하는 게이트는 신뢰할 수 없다. 에이전트가 스스로 완료를 선언하는 대신 시스템이 결정론적으로 판정해야 한다.
 
-5가지 작업 철학 중 기계 판정이 가능한 4가지(철학 2, 3, 4, 5)와 감사층(`claim-guard`)은 네트워크나 추가 LLM 호출 없이 순수 `python3` 표준 라이브러리 훅으로 강제하고, 구문 검사로 환원되지 않는 설계 규율(철학 1)만 `contract-first` 스킬로 안내한다.
+5가지 작업 철학 중 기계 판정이 가능한 4가지(철학 2, 3, 4, 5)와 감사층(`claim-guard`)은 네트워크나 추가 LLM 호출 없이 순수 `python3` 표준 라이브러리 훅으로 강제하고 구문 검사로 환원되지 않는 설계 규율(철학 1)만 `contract-first` 스킬로 안내한다.
 
 ## 5대 철학 및 강제 프록시 매핑
 
@@ -107,7 +107,7 @@ hooks/
   plugin-dispatch.sh     Claude 글로벌 플러그인 진입점 (.horos 옵트인 및 1계층 무상태 가드, D19/D20/D34)
   hooks.json             플러그인 훅 매니페스트
   horos                  통합 CLI (scope, mode, global-mode, decide, aporia, claim, install, install-global, init, uninstall, prune, log, doctor)
-VERSION                  중앙 버전 스탬프 (0.5.2)
+VERSION                  중앙 버전 스탬프 (0.5.3)
 decisions.jsonl          철학 2 공유 원장 (커밋 및 동기화 대상)
 tests/
   run.sh                 전 계층 단위 및 경계값 검증 스위트
@@ -117,6 +117,16 @@ tests/
 ## 멀티 하네스 설치 안내
 
 `horos`는 대상 프로젝트에 훅 스크립트를 복제하지 않고 중앙 저장소를 `$HOME` 상대 경로로 참조 연결하여 프로젝트 간 버전 드리프트를 원천 차단한다 (D12).
+
+### 0. 3대 하네스 계층형 전역 배선 (권장, D34)
+
+사용자 전역 설정에 한 번만 배선해 두면 `.horos/`가 없는 일반 문서·연구 폴더에서는 코딩 브리핑이나 폴더 생성 없이 파괴적 셸 명령만 조용히 방어(`global-mode`)하고 `horos init`을 실행한 코딩 저장소에서만 5대 가드 전체를 가동한다.
+
+```bash
+horos install-global --harness all
+horos global-mode warn               # 관찰 후 전역 하드 차단을 원하면 block 으로 전환
+horos init ~/path/to/code-project    # 코딩 저장소별로 5대 가드 전체 활성화
+```
 
 ### 1. Claude Code (플러그인 또는 참조 배선)
 
@@ -143,7 +153,7 @@ horos init ~/path/to/project                    # .horos 옵트인 마커 생성
 
 ### 3. Codex CLI (`--harness codex`, D28)
 
-`CLAUDE_PROJECT_DIR`이 없는 환경에서도 `HOROS_PROJECT_DIR`, 훅 입력 JSON의 `cwd`, 프로세스 작업 디렉터리의 Git 루트 순으로 대상 프로젝트를 자동 식별하며, Codex 고유 편집 도구인 `apply_patch` 패치 본문을 직접 파싱한다.
+`CLAUDE_PROJECT_DIR`이 없는 환경에서도 `HOROS_PROJECT_DIR`, 훅 입력 JSON의 `cwd`, 프로세스 작업 디렉터리의 Git 루트 순으로 대상 프로젝트를 자동 식별하며 Codex 고유 편집 도구인 `apply_patch` 패치 본문을 직접 파싱한다.
 
 ```bash
 horos install --harness codex ~/path/to/project # 대상 .codex/hooks.json 생성 및 갱신
@@ -177,8 +187,8 @@ bash tests/run.sh                                                         # 9. �
 
 ## 한계와 설계 경계
 
-- **감사층의 정직한 경계**: `claim-guard`는 주장의 구조, 파일 해시 신선도, 내부 불변식, 원장 교차참조만 결정론적으로 보증한다. 형식과 해시가 일치하는 의미상의 거짓 주장(coherent lie)은 기계가 가려낼 수 없으며, 실제 의미 검증은 단위 테스트와 코드 리뷰가 담당한다.
-- **정적 명령 스캐닝의 범위**: `reversibility-guard`는 `bash -c`, `sh -c`, `eval`, `python -c` 인라인 삭제와 주요 Git 작업트리 폐기 명령을 잡아내지만, 다단 변수 치환이나 외부 스크립트 파일 내부의 파괴 동작까지 정적으로 완전 분석하지는 않는다.
+- **감사층의 정직한 경계**: `claim-guard`는 주장의 구조, 파일 해시 신선도, 내부 불변식, 원장 교차참조만 결정론적으로 보증한다. 형식과 해시가 일치하는 의미상의 거짓 주장(coherent lie)은 기계가 가려낼 수 없으며 실제 의미 검증은 단위 테스트와 코드 리뷰가 담당한다.
+- **정적 명령 스캐닝의 범위**: `reversibility-guard`는 `bash -c`, `sh -c`, `eval`, `python -c` 인라인 삭제와 주요 Git 작업트리 폐기 명령을 잡아내지만 다단 변수 치환이나 외부 스크립트 파일 내부의 파괴 동작까지 정적으로 완전 분석하지는 않는다.
 - **장애 시 개방 원칙**(Fail-Open): 예상치 못한 트랜스크립트 스키마 변경이나 내부 예외 발생 시 세션을 인질로 잡지 않고 통과시키되, 반드시 `.horos/violations.log`에 `HOROS-TEL-*` 추적을 남겨 `horos doctor`에서 관측할 수 있게 한다 (D16).
 
 ## 라이선스

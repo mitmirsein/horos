@@ -174,19 +174,6 @@ else:
 PY
 }
 
-# inject non-blocking context (UserPromptSubmit etc.)
-inject_context() { # event text
-  HOROS_EV="$1" HOROS_MSG="$2" HOROS_H="$HOROS_HARNESS" python3 - <<'PY'
-import json, os, sys
-if os.environ.get("HOROS_H") == "exitcode":
-    sys.stdout.buffer.write((os.environ["HOROS_MSG"] + "\n").encode("utf-8"))
-else:
-    sys.stdout.buffer.write((json.dumps({"hookSpecificOutput": {
-        "hookEventName": os.environ["HOROS_EV"],
-        "additionalContext": os.environ["HOROS_MSG"]}}, ensure_ascii=False) + "\n").encode("utf-8"))
-PY
-}
-
 pass() { exit 0; }
 
 # enforce_pretool code rule detail reason : act per mode; exit 2 under HOROS_HARNESS=exitcode (D15/D28)

@@ -1,4 +1,4 @@
-# horos (v0.5.2)
+# horos (v0.5.3)
 
 [![CI](https://github.com/mitmirsein/horos/actions/workflows/ci.yml/badge.svg)](https://github.com/mitmirsein/horos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -6,9 +6,9 @@
 
 [**English**](README.md) | [**한국어**](README.ko.md)
 
-Deterministic hook-based discipline layer for coding agents across **Claude Code**, **Antigravity 2.0**, **OpenAI Codex CLI**, and generic **POSIX exit-code** harnesses.
+Zero-dependency guardrails and decision ledger for AI coding agents across **Claude Code**, **Antigravity 2.0**, **OpenAI Codex CLI**, and generic **POSIX exit-code** harnesses.
 
-Prompts and `AGENTS.md` files decay under long context windows. `horos` (Greek ὅρος: boundary, definition, contractual term) enforces engineering boundaries mechanically at tool-call and turn-stop boundaries using zero external packages and zero extra LLM calls (`bash` + `python3` standard library only).
+Prompts and `AGENTS.md` files decay under long context windows. `horos` (Greek ὅρος: boundary, definition, contractual term) acts as a mechanical safety seatbelt and black-box ledger at tool-call and turn-stop boundaries using zero external packages and zero extra LLM API calls (`bash` + `python3` standard library only).
 
 ---
 
@@ -85,6 +85,16 @@ Every block, warning, and CLI validation error follows a single machine-actionab
 ## Multi-Harness Setup
 
 `horos` wires hooks **by `$HOME`-relative reference** rather than copying scripts into every repository, preventing hook drift across projects and synced machines (D12).
+
+### 0. Tiered Global Setup Across All Harnesses (Recommended, D34)
+
+Wire Claude Code, Antigravity 2.0, and Codex CLI once at the user level. Non-opted directories (notes, vaults, scratch folders) stay free of `.horos/` files and prompt noise while remaining protected against destructive shell commands (`global-mode`), and repositories opted in via `horos init` automatically engage the full 5-guard suite:
+
+```bash
+horos install-global --harness all
+horos global-mode warn               # or 'block' to hard-deny destructive shell commands everywhere
+horos init ~/path/to/code-project    # opt in to full 5-guard enforcement per repository
+```
 
 ### 1. Claude Code (Plugin or Reference Wiring)
 

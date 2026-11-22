@@ -18,9 +18,9 @@ if [ -n "$root" ] && [ -d "$root/.horos" ]; then
     exit 0                                                                   # D20: local .codex wiring wins
   fi
   case "$event" in
-    pre-edit)      printf '%s' "$input" | HOROS_PROJECT_DIR="$root" exec "$HERE/scope-guard.sh" ;;
-    pre-bash)      printf '%s' "$input" | HOROS_PROJECT_DIR="$root" exec "$HERE/reversibility-guard.sh" ;;
-    session-start) printf '%s' "$input" | HOROS_PROJECT_DIR="$root" exec "$HERE/session-brief.sh" ;;
+    pre-edit)      printf '%s' "$input" | HOROS_PROJECT_DIR="$root" "$HERE/scope-guard.sh"; exit $? ;;
+    pre-bash)      printf '%s' "$input" | HOROS_PROJECT_DIR="$root" "$HERE/reversibility-guard.sh"; exit $? ;;
+    session-start) printf '%s' "$input" | HOROS_PROJECT_DIR="$root" "$HERE/session-brief.sh"; exit $? ;;
     stop)
       {
         printf '%s' "$input" | HOROS_PROJECT_DIR="$root" "$HERE/finish-the-work.sh" 2>/dev/null || true
@@ -58,4 +58,5 @@ case "$gmode" in warn|block) ;; *) exit 0 ;; esac
 if [ -n "$root" ] && grep -qF 'reversibility-guard.sh' "$root/.codex/hooks.json" 2>/dev/null; then
   exit 0
 fi
-printf '%s' "$input" | exec python3 "$HERE/horos_core.py" global-pre-bash codex "$gmode"
+printf '%s' "$input" | python3 "$HERE/horos_core.py" global-pre-bash codex "$gmode"
+exit $?

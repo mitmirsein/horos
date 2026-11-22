@@ -46,7 +46,10 @@ if [ -z "$root" ] || [ ! -d "$root/.horos" ]; then
         gmode="${gmode//[[:space:]]/}"
       fi
       case "$gmode" in
-        warn|block) printf '%s' "$input" | exec python3 "$HERE/horos_core.py" global-pre-bash agy "$gmode" ;;
+        warn|block)
+          # D35: explicit exit after pipeline (bash '| exec' runs in subshell and falls through)
+          printf '%s' "$input" | python3 "$HERE/horos_core.py" global-pre-bash agy "$gmode"
+          exit $? ;;
         *) noop ;;
       esac ;;
     *) noop ;;

@@ -2,8 +2,8 @@
 # stop-loop guard). Never share it across machines or commit it.
 .horos/
 
-# local design proposal (promote to docs/ when published)
-PROPOSAL-*.md
+# machine-local harness permission overrides
+*.local.json
 
 # macOS / editor / python bytecode noise
 .DS_Store

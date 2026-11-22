@@ -29,7 +29,7 @@ jobs:
 
       - name: Check tracked files for hardcoded user paths
         run: |
-          if git grep -En '/Users/[A-Za-z0-9._-]+/' -- ':!decisions.jsonl'; then
+          if git grep -En '/Users/[A-Za-z0-9._-]+/'; then
             echo "error: hardcoded macOS user home path detected in tracked files" >&2
             exit 1
           fi
