@@ -16,26 +16,41 @@
 # Fail-open throughout: an adapter bug must never wedge the agent.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
+global_wire=0
+if [ "${1:-}" = "--global" ]; then global_wire=1; shift; fi               # D34: global ~/.gemini/config/hooks.json mode
 event="${1:-}"
 input="$(cat 2>/dev/null || true)"
 
 emit() { printf '%s\n' "$1"; exit 0; }
 noop() { exit 0; }
 
-# Project root = agy workspacePaths[0] (fallback cwd)
-root="$(HB_IN="$input" python3 - <<'PY' 2>/dev/null || true
-import os, json
-try: d = json.loads(os.environ.get("HB_IN") or "{}")
-except Exception: d = {}
-wp = d.get("workspacePaths") if isinstance(d, dict) else None
-print(wp[0] if (isinstance(wp, list) and wp and isinstance(wp[0], str) and wp[0].strip()) else os.getcwd())
-PY
-)"
-[ -n "$root" ] || root="$(pwd)"
+# Project root = agy workspacePaths[0] -> payload cwd -> (non-global only) process cwd (# D23, # D34)
+root="$(printf '%s' "$input" | PYTHONPATH="$HERE" python3 "$HERE/horos_core.py" dispatch-root "$((1 - global_wire))" 2>/dev/null || true)"
+if [ -z "$root" ] && [ "$global_wire" = "0" ]; then root="$(pwd)"; fi
 
-# Activation gate (opt-in marker .horos/)
-if [ ! -d "$root/.horos" ]; then
+# D20/D34 precedence gate: when wired globally, defer if target's .agents/hooks.json already wires horos
+if [ "$global_wire" = "1" ] && [ -n "$root" ] && [ -f "$root/.agents/hooks.json" ] && grep -q '"horos"' "$root/.agents/hooks.json" 2>/dev/null; then
   case "$event" in session-start) emit '{"injectSteps":[]}' ;; *) noop ;; esac
+fi
+
+# Activation gate (opt-in marker .horos/) + Tier-1 stateless reversibility baseline (# D19, # D34)
+if [ -z "$root" ] || [ ! -d "$root/.horos" ]; then
+  case "$event" in
+    session-start) emit '{"injectSteps":[]}' ;;
+    pre-tool)
+      gmode="${HOROS_GLOBAL_MODE:-}"
+      if [ -z "$gmode" ]; then
+        hhome="${HOROS_HOME:-${HOME:-}}"
+        gcfg="${HOROS_GLOBAL_CONFIG:-${XDG_CONFIG_HOME:-$hhome/.config}/horos/global_mode}"
+        [ -f "$gcfg" ] && IFS= read -r gmode < "$gcfg" 2>/dev/null || true
+        gmode="${gmode//[[:space:]]/}"
+      fi
+      case "$gmode" in
+        warn|block) printf '%s' "$input" | exec python3 "$HERE/horos_core.py" global-pre-bash agy "$gmode" ;;
+        *) noop ;;
+      esac ;;
+    *) noop ;;
+  esac
 fi
 
 case "$event" in

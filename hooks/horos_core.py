@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -32,8 +33,15 @@ TESTISH = re.compile(
 )
 DREF = re.compile(r"\b[DA][1-9][0-9]*\b")
 VALID_MODES = ("warn", "block", "strict")
+VALID_GLOBAL_MODES = ("off", "warn", "block")  # D34
 CLAIM_KINDS = ("completion", "consistency")
 KNOWN_CLAIM_FLAGS = ("tests_added", "consistent_with_refs")
+AGY_PRETOOL_MATCHER = (  # D34
+    "run_command|run_terminal_command|command|bash|"
+    "write_file|write_to_file|create_file|edit_file|"
+    "replace_file_content|multi_replace_file_content|"
+    "edit_notebook|code_action|file_change|write_blob"
+)
 
 def _comment_tail(ln):
     """Return unquoted comment text from a single code line, or '' if none. # D3, # D29"""
@@ -148,6 +156,70 @@ def resolve_root(input_json="", env=None, fallback_dir=""):
         return cwd_gt.rstrip("/") or "/"
 
     return (fallback_dir or os.getcwd()).rstrip("/") or "/"
+
+
+def resolve_dispatch_root(input_json="", env=None, allow_proc_cwd=False):
+    """Resolve workspace root for global dispatchers without falling back to central horos/. # D34"""
+    env = env if env is not None else os.environ
+    explicit = (env.get("HOROS_PROJECT_DIR") or "").strip()
+    if explicit:
+        return explicit.rstrip("/") or "/"
+
+    payload = {}
+    if input_json:
+        try:
+            obj = json.loads(input_json)
+            if isinstance(obj, dict):
+                payload = obj
+        except Exception:
+            payload = {}
+
+    wp = payload.get("workspacePaths")
+    if isinstance(wp, list) and wp and isinstance(wp[0], str) and wp[0].strip():
+        return wp[0].strip().rstrip("/") or "/"
+
+    cand = ""
+    for k in ("cwd", "project_dir", "projectDir", "workdir"):
+        v = payload.get(k)
+        if isinstance(v, str) and v.strip():
+            cand = v.strip()
+            break
+
+    if cand:
+        if os.path.isdir(os.path.join(cand, ".horos")):
+            return cand.rstrip("/") or "/"
+        gt = git_toplevel(cand)
+        return (gt or cand).rstrip("/") or "/"
+
+    if allow_proc_cwd:
+        return os.getcwd().rstrip("/") or "/"
+
+    return ""
+
+
+def global_config_path(env=None):
+    """Return path to machine-local Tier-1 global mode config file. # D34"""
+    env = env if env is not None else os.environ
+    explicit = (env.get("HOROS_GLOBAL_CONFIG") or "").strip()
+    if explicit:
+        return explicit
+    home = (env.get("HOROS_HOME") or env.get("HOME") or os.path.expanduser("~")).rstrip("/")
+    xdg = (env.get("XDG_CONFIG_HOME") or "").strip().rstrip("/")
+    base = xdg if xdg else os.path.join(home, ".config")
+    return os.path.join(base, "horos", "global_mode")
+
+
+def read_global_mode(env=None):
+    """Read Tier-1 global baseline mode ('off' | 'warn' | 'block'; defaults to 'off'). # D34"""
+    env = env if env is not None else os.environ
+    raw = (env.get("HOROS_GLOBAL_MODE") or "").strip()
+    if not raw:
+        try:
+            with open(global_config_path(env), encoding="utf-8") as fh:
+                raw = fh.read().strip()
+        except OSError:
+            raw = ""
+    return raw if raw in VALID_GLOBAL_MODES else "off"
 
 
 def normalize_relpath(fp, root):
@@ -504,13 +576,77 @@ DESTRUCTIVE_PATTERNS = [
 ]
 
 
+_SAFE_EPHEMERAL_RM_PATH = re.compile(
+    r"^(?:/(?:private/)?tmp/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*"
+    r"|/(?:private/)?var/folders/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)$"
+)
+_OS_TEMP_SYMLINK_ROOTS = frozenset({"/tmp", "/var"})
+
+
+def _is_safe_ephemeral_rm(cmd):
+    """Allow standalone rm of named subdirectories under /tmp or /var/folders without friction,
+    while rejecting root /tmp, globs, chaining, expansions, '..', or child symlinks. # D34
+    """
+    s = (cmd or "").strip()
+    if not s or any(ch in s for ch in ";|&\n\r`$><()*?[]{}~\\"):
+        return False
+    try:
+        tokens = shlex.split(s)
+    except ValueError:
+        return False
+    if len(tokens) < 2 or tokens[0] not in ("rm", "/bin/rm"):
+        return False
+
+    operands = []
+    end_opts = False
+    for tok in tokens[1:]:
+        if not end_opts and tok == "--":
+            end_opts = True
+            continue
+        if not end_opts and tok.startswith("-"):
+            if tok in ("--recursive", "--force"):
+                continue
+            if re.match(r"^-[rRfFv]+$", tok):
+                continue
+            return False
+        operands.append(tok)
+
+    if not operands:
+        return False
+
+    allowed_real_prefixes = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
+    allowed_real_roots = ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")
+
+    for p in operands:
+        if not p.startswith("/"):
+            return False
+        segs = p.strip("/").split("/")
+        if not segs or any(seg in ("", ".", "..") for seg in segs):
+            return False
+        if not _SAFE_EPHEMERAL_RM_PATH.match(p):
+            return False
+        cur = ""
+        for seg in segs:
+            cur = cur + "/" + seg
+            if cur in _OS_TEMP_SYMLINK_ROOTS:
+                continue
+            if os.path.lexists(cur) and os.path.islink(cur):
+                return False
+        parent = os.path.dirname(p.rstrip("/")) or "/"
+        if os.path.exists(parent):
+            rp = os.path.realpath(parent)
+            if rp not in allowed_real_roots and not rp.startswith(allowed_real_prefixes):
+                return False
+    return True
+
+
 def scan_destructive_command(cmd):
-    """Return matched destructive command label or '' if safe. # D4, # D30
+    """Return matched destructive command label or '' if safe. # D4, # D30, # D34
 
     Masks quoted arguments (so commit messages like `git commit -m 'fix rm -rf'` pass),
     AFTER unwrapping inline subshell payloads (`bash -c '...'`, `eval '...'`, `python -c '...'`).
     """
-    if not cmd:
+    if not cmd or _is_safe_ephemeral_rm(cmd):
         return ""
 
     candidates = []
@@ -687,3 +823,94 @@ def prune_runtime(state_dir, keep_days=14, prune_all=False):
                 pass
 
     return summary
+
+
+def run_global_pre_bash(harness, stdin_text, gmode="", env=None):
+    """Stateless Tier-1 reversibility check for non-opted directories (zero .horos/ writes). # D34"""
+    env = env if env is not None else os.environ
+    mode = gmode if gmode in ("warn", "block") else read_global_mode(env)
+    if mode not in ("warn", "block"):
+        return 0
+
+    try:
+        d = json.loads(stdin_text or "{}")
+    except Exception:
+        return 0
+    if not isinstance(d, dict):
+        return 0
+
+    cmd = ""
+    cwd = str(d.get("cwd") or "")
+    if harness == "agy":
+        tc = d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+        name = str(tc.get("name") or "").lower()
+        if name not in ("run_command", "run_terminal_command", "command", "bash"):
+            return 0
+        args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+        for k in ("CommandLine", "commandline", "Command", "command"):
+            v = args.get(k)
+            if isinstance(v, str) and v:
+                cmd = v
+                break
+    else:
+        if d.get("tool_name") != "Bash":
+            return 0
+        inp = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+        cmd = str(inp.get("command") or "")
+
+    if not cmd:
+        return 0
+
+    defer_sub = (env.get("HOROS_DEFER_SUBTREE") or "").strip()
+    if defer_sub:
+        real_sub = os.path.realpath(defer_sub).rstrip("/")
+        inside_cwd, _ = normalize_relpath(cwd, real_sub) if cwd else (False, "")
+        if inside_cwd or (defer_sub.rstrip("/") in cmd) or (real_sub in cmd):
+            return 0
+
+    label = scan_destructive_command(cmd)
+    if not label:
+        return 0
+
+    flat_cmd = cmd.replace("\n", " ").replace("\t", " ")
+    short = flat_cmd[:120]
+    body = (
+        "HOROS-REV-DESTRUCT 비가역·파괴 작업 감지(전역 가드): %s. "
+        "갈아엎기 전에 dry-run/백업/별도 커밋으로 가역성을 확보하고, 의도한 작업이면 확인 후 진행하세요. "
+        "Action: create a restore point first (dry-run, backup, or a separate commit), then rerun if intended. "
+        "예: git stash push -u  (명령: %s)" % (label, short)
+    )
+    prefix = "[horos:block] " if mode == "block" else "[horos:warn] "
+    full_msg = prefix + body
+
+    if harness == "agy":
+        out = {"decision": "deny" if mode == "block" else "allow", "reason": full_msg}
+        sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False) + "\n").encode("utf-8"))
+        return 0
+    if harness == "exitcode":
+        sys.stderr.buffer.write((full_msg + "\n").encode("utf-8"))
+        return 2 if mode == "block" else 0
+    if mode == "block":
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": full_msg,
+            }
+        }
+    else:
+        out = {"systemMessage": full_msg}
+    sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False) + "\n").encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    sub = sys.argv[1] if len(sys.argv) > 1 else ""
+    if sub == "global-pre-bash":
+        h = sys.argv[2] if len(sys.argv) > 2 else "claude"
+        gm = sys.argv[3] if len(sys.argv) > 3 else ""
+        sys.exit(run_global_pre_bash(h, sys.stdin.read(), gm, os.environ))
+    elif sub == "dispatch-root":
+        allow_cwd = (sys.argv[2] == "1") if len(sys.argv) > 2 else False
+        print(resolve_dispatch_root(sys.stdin.read(), os.environ, allow_proc_cwd=allow_cwd))
+        sys.exit(0)

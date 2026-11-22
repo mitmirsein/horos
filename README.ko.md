@@ -1,10 +1,10 @@
-# horos (v0.5.1)
+# horos (v0.5.2)
 
 [![CI](https://github.com/mitmirsein/horos/actions/workflows/ci.yml/badge.svg)](https://github.com/mitmirsein/horos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/deps-bash%20%2B%20python3%20stdlib-success.svg)](#지원-환경-및-요구사항)
 
-**[English](README.md)** | **[한국어](README.ko.md)**
+[**English**](README.md) | [**한국어**](README.ko.md)
 
 작업 철학을 에이전트가 우회할 수 없도록 결정론적 훅으로 강제하는 멀티 하네스(Claude Code, Antigravity 2.0, Codex CLI, 범용 POSIX 러너) 규율 계층이다.
 
@@ -101,15 +101,16 @@ hooks/
   decision-guard.sh      철학 2: 결정(D-id) 및 아포리아(A-id) 주석 참조 무결성 검증
   claim-guard.sh         감사층: 제출된 claim의 구조, 해시 신선도, 불변식, 교차참조 검증
   session-brief.sh       SessionStart 시점 규약 카드(15줄 이하) 자동 주입 (D17)
-  agy-adapter.sh         Antigravity 2.0 양방향 입출력 어댑터 (SessionStart, terminationReason 안전 게이트, 증분 줄 수 계산, D23~D31)
+  agy-adapter.sh         Antigravity 2.0 양방향 입출력 어댑터 (로컬 및 --global 전역 모드 지원, D23~D34)
+  codex-dispatch.sh      Codex CLI 전역 디스패처 (.horos 옵트인 및 1계층 무상태 가드, D34)
   parent-bridge.sh       상위 워크스페이스 브리지 (하위 horos 작업만 선별 위임, D11)
-  plugin-dispatch.sh     글로벌 플러그인 진입점 (.horos 옵트인 및 로컬 배선 우선순위 게이트, D19/D20)
+  plugin-dispatch.sh     Claude 글로벌 플러그인 진입점 (.horos 옵트인 및 1계층 무상태 가드, D19/D20/D34)
   hooks.json             플러그인 훅 매니페스트
-  horos                  통합 CLI (scope, mode, decide, aporia, claim, install, init, uninstall, prune, log, doctor)
-VERSION                  중앙 버전 스탬프 (0.5.1)
+  horos                  통합 CLI (scope, mode, global-mode, decide, aporia, claim, install, install-global, init, uninstall, prune, log, doctor)
+VERSION                  중앙 버전 스탬프 (0.5.2)
 decisions.jsonl          철학 2 공유 원장 (커밋 및 동기화 대상)
 tests/
-  run.sh                 전 계층 단위 및 경계값 검증 스위트 (219개 케이스)
+  run.sh                 전 계층 단위 및 경계값 검증 스위트
   fixtures/*.jsonl       합성 트랜스크립트 픽스처 20종
 ```
 
@@ -158,13 +159,15 @@ horos init ~/path/to/project                    # .horos 옵트인 마커 생성
 
 ```bash
 horos scope set "src/**" "tests/**"                                       # 1. 편집 허용 경계 선언
-horos mode show | warn | block | strict                                   # 2. 강제 수위 조회 및 전환
-horos decide D1 "<이유>" "<비용>" "<탈출구>" "src/app.py"                   # 3. 설계 결정 외화 (# D1 주석 병기)
-horos aporia A1 "<극1>|<극2>" "<보류 이유>" "<재검토 조건>"                 # 4. 보류된 설계 긴장(아포리아) 기록
+horos mode show | warn | block | strict                                   # 2. 프로젝트별 강제 수위 전환
+horos global-mode show | off | warn | block                               # 3. 비옵트인 경로 1계층 전역 가드 전환 (D34)
+horos install-global --harness all                                        # 4. 3대 하네스 전역 디스패처 일괄 배선 (D34)
+horos decide D1 "<이유>" "<비용>" "<탈출구>" "src/app.py"                   # 5. 설계 결정 외화 (# D1 주석 병기)
+horos aporia A1 "<극1>|<극2>" "<보류 이유>" "<재검토 조건>"                 # 6. 보류된 설계 긴장(아포리아) 기록
 horos claim completion "<수행 요약>" "src/app.py,tests/test_app.py" "D1" "tests_added,consistent_with_refs"
-horos doctor                                                              # 5. 배선, 드리프트, 텔레메트리 점검
-horos prune --days 14                                                     # 6. 오래된 런타임 기록 정리
-bash tests/run.sh                                                         # 7. 전체 단위 테스트 실행 (219건)
+horos doctor                                                              # 7. 배선, 전역 드리프트, 텔레메트리 점검
+horos prune --days 14                                                     # 8. 오래된 런타임 기록 정리
+bash tests/run.sh                                                         # 9. 전체 단위 테스트 실행
 ```
 
 ## 지원 환경 및 요구사항

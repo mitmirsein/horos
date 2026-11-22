@@ -16,7 +16,9 @@ for fx in $REQUIRED_FIXTURES; do
 done
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export CLAUDE_PROJECT_DIR="$TMP"
-mkdir -p "$TMP/.horos" "$TMP/hooks"
+export HOROS_GLOBAL_CONFIG="$TMP/global_mode"
+export HOROS_HOME="$TMP/fakehome"
+mkdir -p "$TMP/.horos" "$TMP/hooks" "$HOROS_HOME"
 
 pass=0; fail=0
 mode(){ printf '%s\n' "$1" > "$TMP/.horos/mode"; }
@@ -592,6 +594,95 @@ dr_out="$("$HOOKS/horos" doctor "$DRP")"
 expect "doctor drift: flags stale edit matcher" "edit matcher missing NotebookEdit|apply_patch" "$dr_out"
 expect "doctor drift: flags legacy PreInvocation" "legacy PreInvocation" "$dr_out"
 expect "doctor drift: flags broken cli.path" "non-executable path" "$dr_out"
+
+echo "== D34: tiered global rollout (global-mode, codex-dispatch, agy --global, ephemeral /tmp rm, install-global) =="
+CDX="$HOOKS/codex-dispatch.sh"
+NOPT="$TMP/nonopted"; mkdir -p "$NOPT" "$TMP/bin"
+ln -sfn "$HOOKS/horos" "$TMP/bin/horos"
+expect "symlinked ~/.local/bin/horos resolves CENTRAL" "vers : $(cat "$HOOKS/../VERSION")" "$("$TMP/bin/horos" doctor "$NOPT")"
+# 0) lazy mkdir on non-state CLI commands: doctor/global-mode must NOT create .horos in CWD
+( cd "$NOPT" && env -u CLAUDE_PROJECT_DIR "$HOOKS/horos" global-mode show >/dev/null && env -u CLAUDE_PROJECT_DIR "$HOOKS/horos" doctor "$NOPT" >/dev/null )
+expect_empty "CLI doctor/global-mode does not auto-mkdir .horos" "$([ -d "$NOPT/.horos" ] && echo "POLLUTED" || true)"
+expect "global-mode default is off" "off" "$("$HOOKS/horos" global-mode show)"
+expect "global-mode rejects invalid tier" "usage: horos global-mode" "$("$HOOKS/horos" global-mode bogus 2>&1 || true)"
+
+# 1) global-mode=off -> marker-less directories stay 100% silent across all 3 harnesses
+expect_empty "tier-1 off (claude): rm -rf silent on non-opted dir" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect_empty "tier-1 off (agy --global): rm -rf silent on non-opted dir" "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf build"}},"workspacePaths":["%s"]}' "$NOPT" | "$AD" --global pre-tool)"
+expect_empty "tier-1 off (codex): rm -rf silent on non-opted dir" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$NOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-bash)"
+
+# 2) global-mode=warn -> catches destructive bash statelessly WITHOUT creating .horos or firing Stop/SessionStart
+expect "global-mode warn set" "global-mode = warn" "$("$HOOKS/horos" global-mode warn)"
+expect "tier-1 warn (claude): rm -rf warns" "[horos:warn] HOROS-REV-DESTRUCT" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "tier-1 warn (agy --global, no workspace): rm -rf warns" '"decision": "allow"' "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf build"}}}' | "$AD" --global pre-tool)"
+expect "tier-1 warn (codex): rm -rf warns" "[horos:warn] HOROS-REV-DESTRUCT" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$NOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-bash)"
+expect_empty "tier-1 warn: non-opted session-start silent (claude)" "$(printf '{}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" session-start)"
+expect "tier-1 warn: non-opted session-start empty injectSteps (agy --global)" '{"injectSteps":[]}' "$(printf '{"workspacePaths":["%s"]}' "$NOPT" | "$AD" --global session-start)"
+expect_empty "tier-1 warn: non-opted stop silent on zero-tool prose claim (claude)" "$(fin gfin1 "$FIX/claim.jsonl" | CLAUDE_PROJECT_DIR="$NOPT" "$PD" stop-finish)"
+expect_empty "tier-1 warn: non-opted stop silent (codex)" "$(printf '{"session_id":"gcx1","transcript_path":"%s","cwd":"%s"}' "$FIX/claim.jsonl" "$NOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" stop)"
+expect_empty "tier-1 warn: non-opted write silent (codex)" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/note.md"},"cwd":"%s"}' "$NOPT" "$NOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-edit)"
+expect_empty "tier-1 warn: zero .horos auto-mkdir on non-opted dir" "$([ -d "$NOPT/.horos" ] && echo "POLLUTED" || true)"
+
+# 3) global-mode=block -> hard denies across all 3 harnesses
+"$HOOKS/horos" global-mode block >/dev/null
+expect "tier-1 block (claude): rm -rf denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "tier-1 block (agy --global): rm -rf denied" '"decision": "deny"' "$(printf '{"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf build"}}}' | "$AD" --global pre-tool)"
+expect "tier-1 block (codex): rm -rf denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$NOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-bash)"
+
+# 4) ephemeral /tmp cleanup exemption + 4-boundary tamper rejection (normal, mapping, missing/root, tampered/symlink)
+EPHEM_OK="/tmp/horos-ephem-ok-$$"
+EPHEM_LINK="/tmp/horos-ephem-evil-$$"
+ln -sfn "$NOPT" "$EPHEM_LINK"
+expect_empty "ephemeral rm: /tmp/<subdir> allowed without friction" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf %s"}}' "$EPHEM_OK" | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect_empty "ephemeral rm: /private/tmp/<subdir> allowed" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /private/tmp/horos-ephem-priv-%s"}}' "$$" | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "ephemeral rm: bare /tmp root rejected" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "ephemeral rm: wildcard /tmp/* rejected" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/*"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "ephemeral rm: traversal /tmp/a/../etc rejected" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/a/../etc"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "ephemeral rm: chained command rejected" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/ok && rm -rf src"}}' | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+expect "ephemeral rm: child symlink under /tmp rejected" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf %s"}}' "$EPHEM_LINK" | CLAUDE_PROJECT_DIR="$NOPT" "$PD" pre-bash)"
+rm -f "$EPHEM_LINK"
+
+# 5) Tier-2 codex-dispatch + D20 precedence across agy --global, codex-dispatch, and parent-bridge
+CXOPT="$TMP/cxopt"; mkdir -p "$CXOPT/src"
+"$HOOKS/horos" init "$CXOPT" >/dev/null
+HOROS_PROJECT_DIR="$CXOPT" "$HOOKS/horos" scope set 'src/**' >/dev/null
+HOROS_PROJECT_DIR="$CXOPT" "$HOOKS/horos" mode block >/dev/null
+expect "codex-dispatch tier-2: session-start injects brief" "horos decide D1" "$(printf '{"cwd":"%s"}' "$CXOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" session-start)"
+expect "codex-dispatch tier-2: out-of-scope edit denied" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.py"},"cwd":"%s"}' "$CXOPT" "$CXOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-edit)"
+expect "codex-dispatch tier-2: stop promise blocks" "HOROS-FIN-PROMISE" "$(printf '{"session_id":"cxd1","transcript_path":"%s","cwd":"%s"}' "$FIX/promise.jsonl" "$CXOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" stop)"
+mkdir -p "$CXOPT/.codex"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"x/scope-guard.sh"}]}]}}\n' > "$CXOPT/.codex/hooks.json"
+expect_empty "codex-dispatch D20: defers when local .codex/hooks.json wires horos" "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/out.py"},"cwd":"%s"}' "$CXOPT" "$CXOPT" | env -u CLAUDE_PROJECT_DIR "$CDX" pre-edit)"
+mkdir -p "$AP/.agents"
+printf '{"horos":{"Stop":[]}}\n' > "$AP/.agents/hooks.json"
+expect_empty "agy --global D20: defers when local .agents/hooks.json wires horos" "$(agyin write_file '{"AbsolutePath":"'"$AP"'/secret.txt"}' | "$AD" --global pre-tool)"
+rm -f "$AP/.agents/hooks.json"
+UMB="$TMP/umbrella"; mkdir -p "$UMB/.claude" "$UMB/other"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x/parent-bridge.sh pre-bash"}]}]}}\n' > "$UMB/.claude/settings.json"
+expect_empty "claude tier-1 + parent-bridge: defers on horos subtree (no double-fire)" "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s"}' "$RROOT" | CLAUDE_PROJECT_DIR="$UMB" "$PD" pre-bash)"
+expect "claude tier-1 + parent-bridge: still guards sibling project under umbrella" '"permissionDecision": "deny"' "$(printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"},"cwd":"%s/other"}' "$UMB" | CLAUDE_PROJECT_DIR="$UMB" "$PD" pre-bash)"
+
+# 6) install-global / uninstall-global + doctor stale Claude plugin cache drift
+mkdir -p "$HOROS_HOME/.gemini/config" "$HOROS_HOME/.codex" "$HOROS_HOME/.claude/plugins"
+printf '{"orca-status":{"Stop":[]},"auto-lint":{"PostToolUse":[]}}\n' > "$HOROS_HOME/.gemini/config/hooks.json"
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"orca-codex"}]}]}}\n' > "$HOROS_HOME/.codex/hooks.json"
+printf '{"enabledPlugins":{"horos@horos":true}}\n' > "$HOROS_HOME/.claude/settings.json"
+printf '{"version":2,"plugins":{"horos@horos":[{"version":"0.4.0"}]}}\n' > "$HOROS_HOME/.claude/plugins/installed_plugins.json"
+"$HOOKS/horos" install-global --harness all >/dev/null
+expect "install-global agy: preserves orca-status" '"orca-status"' "$(cat "$HOROS_HOME/.gemini/config/hooks.json")"
+expect "install-global agy: wires --global adapter" '--global pre-tool' "$(cat "$HOROS_HOME/.gemini/config/hooks.json")"
+expect "install-global codex: preserves orca-codex" 'orca-codex' "$(cat "$HOROS_HOME/.codex/hooks.json")"
+expect "install-global codex: wires codex-dispatch.sh" 'codex-dispatch.sh' "$(cat "$HOROS_HOME/.codex/hooks.json")"
+expect_empty "install-global claude: avoids duplicating hooks when plugin enabled" "$(grep -F 'plugin-dispatch.sh' "$HOROS_HOME/.claude/settings.json" || true)"
+gdoc="$("$HOOKS/horos" doctor "$NOPT")"
+expect "doctor: shows gharn global harnesses" "claude(plugin v0.4.0), agy, codex" "$gdoc"
+expect "doctor: flags stale Claude plugin cache version drift" "cached horos@horos is v0.4.0" "$gdoc"
+"$HOOKS/horos" uninstall-global --harness all >/dev/null
+expect "uninstall-global agy: preserves auto-lint" '"auto-lint"' "$(cat "$HOROS_HOME/.gemini/config/hooks.json")"
+expect_empty "uninstall-global agy: removes horos group" "$(grep -F '"horos"' "$HOROS_HOME/.gemini/config/hooks.json" || true)"
+expect "uninstall-global codex: preserves orca-codex" 'orca-codex' "$(cat "$HOROS_HOME/.codex/hooks.json")"
+expect_empty "uninstall-global codex: removes codex-dispatch.sh" "$(grep -F 'codex-dispatch.sh' "$HOROS_HOME/.codex/hooks.json" || true)"
+"$HOOKS/horos" global-mode off >/dev/null
 
 mode warn
 echo

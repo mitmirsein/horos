@@ -14,10 +14,10 @@ else
   ROOT="$(pwd)"; ROOT_SRC=pwd
 fi
 
-# CENTRAL = where this script lives (distinct from ROOT, the target project).
-CENTRAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd || printf '%s' "$ROOT")"
+# CENTRAL = where the real script lives, resolving ~/.local/bin/horos symlinks (# D34).
+CENTRAL="$(python3 -c 'import os, sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))' "${BASH_SOURCE[0]}" 2>/dev/null || (cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd) || printf '%s' "$ROOT")"
 HERE="$CENTRAL/hooks"
-S="$ROOT/.horos"; mkdir -p "$S"
+S="$ROOT/.horos"                                                           # D34: lazy mkdir only on project-state writes
 
 read_mode() {
   local m=""
@@ -31,7 +31,7 @@ warn_root() {
   fi
 }
 
-HOROS_BASENAMES="scope-guard.sh reversibility-guard.sh finish-the-work.sh decision-guard.sh claim-guard.sh parent-bridge.sh session-brief.sh"
+HOROS_BASENAMES="scope-guard.sh reversibility-guard.sh finish-the-work.sh decision-guard.sh claim-guard.sh parent-bridge.sh session-brief.sh plugin-dispatch.sh codex-dispatch.sh"
 export HOROS_BASENAMES
 
 cmd="${1:-help}"; shift || true
@@ -41,7 +41,7 @@ case "$cmd" in
     case "$sub" in
       set)
         [ "$#" -ge 1 ] || { echo "usage: horos scope set <glob>..." >&2; exit 1; }
-        warn_root
+        warn_root; mkdir -p "$S"
         HOROS_S="$S" python3 - "$@" <<'PY'
 import datetime, json, os, sys
 allow = sys.argv[1:]
@@ -60,9 +60,28 @@ PY
   mode)
     sub="${1:-show}"
     case "$sub" in
-      warn|block|strict) warn_root; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;
+      warn|block|strict) warn_root; mkdir -p "$S"; printf '%s\n' "$sub" > "$S/mode"; echo "mode = $sub -> $S/mode" ;;
       show|"")           echo "$(read_mode)" ;;
       *) echo "usage: horos mode warn|block|strict|show" >&2; exit 1 ;;
+    esac ;;
+
+  global-mode)
+    # D34 — Tier-1 stateless reversibility baseline for non-opted directories (off | warn | block).
+    sub="${1:-show}"
+    case "$sub" in
+      off|warn|block)
+        PYTHONPATH="$HERE" HG_VAL="$sub" python3 - <<'PY'
+import os, horos_core
+p = horos_core.global_config_path(os.environ)
+os.makedirs(os.path.dirname(p), exist_ok=True)
+with open(p, "w", encoding="utf-8") as fh:
+    fh.write(os.environ["HG_VAL"] + "\n")
+print("global-mode = %s -> %s" % (os.environ["HG_VAL"], p))
+PY
+        ;;
+      show|"")
+        PYTHONPATH="$HERE" python3 -c 'import os, horos_core; print(horos_core.read_global_mode(os.environ))' ;;
+      *) echo "usage: horos global-mode off|warn|block|show" >&2; exit 1 ;;
     esac ;;
 
   decide)
@@ -196,7 +215,7 @@ PY
       echo "       horos claim show | clear" >&2; exit 1 ;; esac
     if [ -z "$assertion" ] || [ -z "$files" ]; then
       echo "usage: horos claim <completion|consistency> <assert> <files,csv> [refs,csv] [true_flags,csv]" >&2; exit 1; fi
-    warn_root
+    warn_root; mkdir -p "$S"
     PYTHONPATH="$HERE" HCLAIMS="$S/claims.jsonl" HROOT="$ROOT" HLEDGER="$ROOT/decisions.jsonl" HKIND="$kind" HASSERT="$assertion" HFILES="$files" HREFS="$refs" HFLAGS="$flags" python3 - <<'PY'
 import datetime, difflib, fcntl, hashlib, json, os, re
 try:
@@ -315,16 +334,16 @@ PY
     [ -n "$target" ] || { echo "usage: horos install [--harness claude|agy|codex] <target-project-dir>" >&2; exit 1; }
     [ -d "$target" ] || { echo "error: not a directory: $target" >&2; exit 1; }
     if [ "$harness" = agy ]; then
-      HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
-import json, os
+      PYTHONPATH="$HERE" HOROS_SRC="$CENTRAL" HOROS_TARGET="$target" python3 - <<'PY'
+import json, os, horos_core
 src = os.path.abspath(os.environ["HOROS_SRC"]); target = os.path.abspath(os.environ["HOROS_TARGET"])
 home = os.path.expanduser("~")
 portable = (src == home or src.startswith(home + os.sep))
 rel = src[len(home):].lstrip("/") if portable else None
 adapter = ('"$HOME/%s/hooks/agy-adapter.sh"' % rel) if portable else ('"%s/hooks/agy-adapter.sh"' % src)
-# D31: Antigravity 2.0 wires SessionStart (once per session) + nested systemMessage step
+# D31/D34: Antigravity 2.0 wires SessionStart + mutation/shell PreToolUse matcher + Stop
 block = {"horos": {
-    "PreToolUse": [{"matcher": "*", "hooks": [
+    "PreToolUse": [{"matcher": horos_core.AGY_PRETOOL_MATCHER, "hooks": [
         {"type": "command", "command": adapter + " pre-tool", "timeout": 15}]}],
     "SessionStart": [
         {"type": "command", "command": adapter + " session-start", "timeout": 10}],
@@ -524,6 +543,200 @@ print("  note: hooks unload next session; .horos/ marker kept (plugin takes over
 PY
     ;;
 
+  install-global)
+    # D34 — wire tiered global dispatchers into user-level harness configs (claude | agy | codex | all).
+    harness=all
+    while [ "${1:-}" ]; do case "$1" in
+      --harness) harness="${2:-all}"; shift 2 ;;
+      --harness=*) harness="${1#--harness=}"; shift ;;
+      *) echo "usage: horos install-global [--harness claude|agy|codex|all]" >&2; exit 1 ;;
+    esac; done
+    case "$harness" in claude|agy|codex|all) ;; *)
+      echo "error: unknown harness '$harness' (allowed: claude, agy, codex, all)" >&2; exit 1 ;;
+    esac
+    PYTHONPATH="$HERE" HOROS_SRC="$CENTRAL" HOROS_H="$harness" python3 - <<'PY'
+import json, os, horos_core
+
+src = os.path.abspath(os.environ["HOROS_SRC"])
+harness = os.environ["HOROS_H"]
+real_home = os.path.expanduser("~")
+hhome = os.path.abspath(os.environ.get("HOROS_HOME") or real_home)
+portable = (src == real_home or src.startswith(real_home + os.sep))
+rel = src[len(real_home):].lstrip("/") if portable else None
+BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
+
+def srcpath(name):
+    return ('"$HOME/%s/hooks/%s"' % (rel, name)) if portable else ('"%s/hooks/%s"' % (src, name))
+
+def guardcmd(name, arg):
+    p = srcpath(name)
+    return "[ -x %s ] && %s %s || true" % (p, p, arg)
+
+def is_horos(entry):
+    return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
+
+def load_json(p, label):
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as e:
+        raise SystemExit("error: %s is not valid JSON: %s" % (label, e))
+
+def save_json(p, obj):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
+if harness in ("agy", "all"):
+    agyp = os.path.join(hhome, ".gemini", "config", "hooks.json")
+    cfg = load_json(agyp, "~/.gemini/config/hooks.json")
+    ad = srcpath("agy-adapter.sh")
+    cfg["horos"] = {
+        "PreToolUse": [{"matcher": horos_core.AGY_PRETOOL_MATCHER, "hooks": [
+            {"type": "command", "command": ad + " --global pre-tool", "timeout": 15}]}],
+        "SessionStart": [
+            {"type": "command", "command": ad + " --global session-start", "timeout": 10}],
+        "Stop": [
+            {"type": "command", "command": ad + " --global stop", "timeout": 20}],
+    }
+    save_json(agyp, cfg)
+    print("installed horos global (agy) -> %s" % agyp)
+
+if harness in ("codex", "all"):
+    cxp = os.path.join(hhome, ".codex", "hooks.json")
+    cfg = load_json(cxp, "~/.codex/hooks.json")
+    hooks = cfg.setdefault("hooks", {})
+    for ev in ("PreToolUse", "Stop", "SessionStart"):
+        if ev in hooks:
+            hooks[ev] = [e for e in hooks[ev] if not is_horos(e)]
+    hooks.setdefault("PreToolUse", []).extend([
+        {"matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch",
+         "hooks": [{"type": "command", "command": guardcmd("codex-dispatch.sh", "pre-edit"), "timeout": 15}]},
+        {"matcher": "Bash",
+         "hooks": [{"type": "command", "command": guardcmd("codex-dispatch.sh", "pre-bash"), "timeout": 15}]},
+    ])
+    hooks.setdefault("Stop", []).append(
+        {"hooks": [{"type": "command", "command": guardcmd("codex-dispatch.sh", "stop"), "timeout": 20}]}
+    )
+    hooks.setdefault("SessionStart", []).append(
+        {"matcher": "startup|resume|clear|compact",
+         "hooks": [{"type": "command", "command": guardcmd("codex-dispatch.sh", "session-start"), "timeout": 10}]}
+    )
+    save_json(cxp, cfg)
+    print("installed horos global (codex) -> %s" % cxp)
+    print("  trust gate: approve global hooks via `/hooks` in Codex CLI if prompted (D28/D34)")
+
+if harness in ("claude", "all"):
+    clp = os.path.join(hhome, ".claude", "settings.json")
+    cfg = load_json(clp, "~/.claude/settings.json")
+    ep = cfg.get("enabledPlugins") or {}
+    hooks = cfg.get("hooks") or {}
+    if isinstance(ep, dict) and ep.get("horos@horos") is True:
+        # Plugin already provides global dispatch + commands + skills; strip duplicate settings hooks if any
+        changed = False
+        for ev in list(hooks.keys()):
+            kept = [e for e in hooks[ev] if not is_horos(e)]
+            if len(kept) != len(hooks[ev]):
+                changed = True
+                if kept:
+                    hooks[ev] = kept
+                else:
+                    del hooks[ev]
+        if changed:
+            save_json(clp, cfg)
+        print("verified horos global (claude) -> plugin horos@horos enabled in %s (no duplicate settings hooks)" % clp)
+    else:
+        hooks = cfg.setdefault("hooks", {})
+        for ev in ("PreToolUse", "Stop", "SessionStart"):
+            if ev in hooks:
+                hooks[ev] = [e for e in hooks[ev] if not is_horos(e)]
+        hooks.setdefault("PreToolUse", []).extend([
+            {"matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch",
+             "hooks": [{"type": "command", "command": guardcmd("plugin-dispatch.sh", "pre-edit"), "timeout": 15}]},
+            {"matcher": "Bash",
+             "hooks": [{"type": "command", "command": guardcmd("plugin-dispatch.sh", "pre-bash"), "timeout": 15}]},
+        ])
+        hooks.setdefault("Stop", []).append(
+            {"matcher": "*", "hooks": [
+                {"type": "command", "command": guardcmd("plugin-dispatch.sh", "stop-finish"), "timeout": 15},
+                {"type": "command", "command": guardcmd("plugin-dispatch.sh", "stop-decision"), "timeout": 15},
+                {"type": "command", "command": guardcmd("plugin-dispatch.sh", "stop-claim"), "timeout": 20},
+            ]}
+        )
+        hooks.setdefault("SessionStart", []).append(
+            {"matcher": "startup|resume|clear|compact",
+             "hooks": [{"type": "command", "command": guardcmd("plugin-dispatch.sh", "session-start"), "timeout": 10}]}
+        )
+        save_json(clp, cfg)
+        print("installed horos global (claude, settings dispatch) -> %s" % clp)
+
+print("  tier-1 baseline: %s (toggle via: horos global-mode off|warn|block)" % horos_core.read_global_mode(os.environ))
+print("  tier-2 full set: per-project opt-in via: horos init <project-dir>")
+PY
+    ;;
+
+  uninstall-global)
+    # D34 — cleanly remove global horos entries while preserving unrelated hooks (orca, auto-lint, etc.).
+    harness=all
+    while [ "${1:-}" ]; do case "$1" in
+      --harness) harness="${2:-all}"; shift 2 ;;
+      --harness=*) harness="${1#--harness=}"; shift ;;
+      *) echo "usage: horos uninstall-global [--harness claude|agy|codex|all]" >&2; exit 1 ;;
+    esac; done
+    case "$harness" in claude|agy|codex|all) ;; *)
+      echo "error: unknown harness '$harness' (allowed: claude, agy, codex, all)" >&2; exit 1 ;;
+    esac
+    HOROS_H="$harness" python3 - <<'PY'
+import json, os
+
+harness = os.environ["HOROS_H"]
+hhome = os.path.abspath(os.environ.get("HOROS_HOME") or os.path.expanduser("~"))
+BASENAMES = tuple(os.environ["HOROS_BASENAMES"].split())
+
+def is_horos(entry):
+    return any(any(b in h.get("command", "") for b in BASENAMES) for h in entry.get("hooks", []))
+
+def strip_map(p, label):
+    if not os.path.exists(p):
+        return
+    try:
+        cfg = json.load(open(p, encoding="utf-8"))
+    except Exception as e:
+        raise SystemExit("error: %s is not valid JSON: %s" % (label, e))
+    hooks = cfg.get("hooks") or {}
+    removed = 0
+    for ev in list(hooks.keys()):
+        kept = [e for e in hooks[ev] if not is_horos(e)]
+        removed += len(hooks[ev]) - len(kept)
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    if not hooks and "hooks" in cfg:
+        del cfg["hooks"]
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, ensure_ascii=False, indent=2); fh.write("\n")
+    print("removed %d global horos entr%s -> %s" % (removed, "y" if removed == 1 else "ies", p))
+
+if harness in ("agy", "all"):
+    agyp = os.path.join(hhome, ".gemini", "config", "hooks.json")
+    if os.path.exists(agyp):
+        cfg = json.load(open(agyp, encoding="utf-8"))
+        had = 1 if "horos" in cfg else 0
+        cfg.pop("horos", None)
+        with open(agyp, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, ensure_ascii=False, indent=2); fh.write("\n")
+        print("removed %d global horos group -> %s" % (had, agyp))
+if harness in ("codex", "all"):
+    strip_map(os.path.join(hhome, ".codex", "hooks.json"), "~/.codex/hooks.json")
+if harness in ("claude", "all"):
+    strip_map(os.path.join(hhome, ".claude", "settings.json"), "~/.claude/settings.json")
+PY
+    ;;
+
   prune)
     # D32 — bound unbounded runtime growth in .horos/ (violations.log, claims.jsonl, agy_changed.*, guards).
     days=14; prune_all=0; target=""
@@ -570,14 +783,23 @@ PY
       echo "prece: plugin (engages if enabled + marker present)"
     fi
     echo "mode : $dmode"
+    echo "gmode: $(PYTHONPATH="$HERE" python3 -c 'import os, horos_core; print(horos_core.read_global_mode(os.environ))' 2>/dev/null || echo off) (tier-1 baseline)"
     echo "scope: $([ -f "$DS/scope.json" ] && echo declared || echo none)"
     echo "decns: $([ -f "$DT/decisions.jsonl" ] && tr -cd '\n' < "$DT/decisions.jsonl" | wc -c | tr -d ' ' || echo 0) recorded"
     echo "claim: $([ -f "$DS/claims.jsonl" ] && tr -cd '\n' < "$DS/claims.jsonl" | wc -c | tr -d ' ' || echo 0) deposited (runtime)"
     echo "skill: $([ -f "$DT/.claude/skills/contract-first/SKILL.md" ] && echo contract-first || echo none) (philosophy 1)"
-    HOROS_DT="$DT" python3 - <<'PY'
+    HOROS_DT="$DT" HOROS_CENTRAL="$CENTRAL" python3 - <<'PY'
 import json, os, re
 dt = os.path.abspath(os.environ["HOROS_DT"])
+central = os.path.abspath(os.environ["HOROS_CENTRAL"])
+hhome = os.path.abspath(os.environ.get("HOROS_HOME") or os.path.expanduser("~"))
+cver = "unknown"
+try:
+    cver = open(os.path.join(central, "VERSION"), encoding="utf-8").read().strip()
+except OSError:
+    pass
 harnesses = []
+gharnesses = []
 cmds = []
 drifts = []
 
@@ -641,7 +863,64 @@ if os.path.isfile(clip):
     if raw_cli and not os.access(raw_cli, os.X_OK):
         drifts.append(".horos/cli.path: points to non-executable path (%s)" % raw_cli)
 
+# D34: inspect global harness wiring + Claude plugin cache version drift
+g_clp = os.path.join(hhome, ".claude", "settings.json")
+if os.path.exists(g_clp):
+    try:
+        gcl = json.load(open(g_clp, encoding="utf-8"))
+        ep = gcl.get("enabledPlugins") or {}
+        if isinstance(ep, dict) and ep.get("horos@horos") is True:
+            ip_path = os.path.join(hhome, ".claude", "plugins", "installed_plugins.json")
+            pver = None
+            if os.path.exists(ip_path):
+                ip = json.load(open(ip_path, encoding="utf-8"))
+                entries = (ip.get("plugins") or {}).get("horos@horos") or []
+                if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+                    pver = str(entries[0].get("version") or "").strip()
+            gharnesses.append("claude(plugin%s)" % ((" v" + pver) if pver else ""))
+            if pver and cver != "unknown" and pver != cver:
+                drifts.append("~/.claude/plugins: cached horos@horos is v%s != central v%s (run: claude plugin update horos@horos)" % (pver, cver))
+        else:
+            for entries in (gcl.get("hooks") or {}).values():
+                if any("plugin-dispatch.sh" in str(hk.get("command") or "") for e in entries for hk in e.get("hooks", [])):
+                    gharnesses.append("claude(settings)")
+                    break
+    except Exception:
+        drifts.append("~/.claude/settings.json: invalid JSON")
+
+g_agyp = os.path.join(hhome, ".gemini", "config", "hooks.json")
+if os.path.exists(g_agyp):
+    try:
+        gagy = json.load(open(g_agyp, encoding="utf-8"))
+        if isinstance(gagy.get("horos"), dict):
+            gharnesses.append("agy")
+            for entries in gagy["horos"].values():
+                for e in entries:
+                    for hk in (e.get("hooks", []) if isinstance(e, dict) and "hooks" in e else ([e] if isinstance(e, dict) else [])):
+                        c = str(hk.get("command") or "")
+                        m = re.search(r'"([^"]*agy-adapter\.sh)"', c)
+                        if m and not agy_adapter:
+                            agy_adapter = os.path.expandvars(os.path.expanduser(m.group(1)))
+    except Exception:
+        drifts.append("~/.gemini/config/hooks.json: invalid JSON")
+
+g_cxp = os.path.join(hhome, ".codex", "hooks.json")
+if os.path.exists(g_cxp):
+    try:
+        gcx = json.load(open(g_cxp, encoding="utf-8"))
+        for entries in (gcx.get("hooks") or {}).values():
+            for e in entries:
+                for hk in e.get("hooks", []):
+                    c = str(hk.get("command") or "")
+                    if "codex-dispatch.sh" in c:
+                        if "codex" not in gharnesses:
+                            gharnesses.append("codex")
+                        cmds.append(c)
+    except Exception:
+        drifts.append("~/.codex/hooks.json: invalid JSON")
+
 print("harns: %s" % (", ".join(harnesses) if harnesses else "none (plugin or local hooks only)"))
+print("gharn: %s" % (", ".join(gharnesses) if gharnesses else "none"))
 print("hooks:")
 
 def ref_path(name):
@@ -650,6 +929,12 @@ def ref_path(name):
             m = re.search(r'"([^"]*' + re.escape(name) + r')"', c)
             if m:
                 return os.path.expandvars(os.path.expanduser(m.group(1)))
+        if "codex-dispatch.sh" in c:
+            m = re.search(r'"([^"]*codex-dispatch\.sh)"', c)
+            if m:
+                cand = os.path.join(os.path.dirname(os.path.expandvars(os.path.expanduser(m.group(1)))), name)
+                if os.path.exists(cand):
+                    return cand
     if agy_adapter:
         cand = os.path.join(os.path.dirname(agy_adapter), name)
         if os.path.exists(cand):
@@ -691,13 +976,16 @@ horos — agent discipline harness (philosophies 1/2/3/4/5)
   horos scope set <glob>...   declare the editable boundary             (philosophy 3)
   horos scope show | clear
   horos mode warn|block|strict|show  staged enforcement toggle (strict: warn-tier도 block + 루프가드 4회, D18)
+  horos global-mode off|warn|block|show  tier-1 stateless reversibility baseline for non-opted dirs (D34)
   horos decide D<n> <why> <cost> <escape> [files]   externalize a decision  (philosophy 2)
   horos aporia A<n> "<p1>|<p2>" <why_unresolved> <trigger> [files]   externalize a held tension (philosophy 2)
   horos claim <completion|consistency> <assert> <files,csv> [refs] [flags]   deposit a verifiable claim (audit tier)
   horos claim show | clear
   horos install [--harness claude|agy|codex] <target>   wire a project by reference, no copy (D12/D23/D28/D31)
+  horos install-global [--harness claude|agy|codex|all] wire global dispatchers across harnesses (D34)
   horos init [target]         plugin-era opt-in: create .horos marker + mode=warn + gitignore (D19)
   horos uninstall [--harness claude|agy|codex|all] <target>   strip reference wiring (D20/D32)
+  horos uninstall-global [--harness claude|agy|codex|all]     strip global harness wiring (D34)
   horos prune [--days N | --all] [target]   prune aged runtime logs/claims/temp files (D32)
   horos log [N]               recent violations
   horos doctor [target]       installation check (wiring, harnesses, drift, version, health)

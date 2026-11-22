@@ -1,10 +1,10 @@
-# horos (v0.5.1)
+# horos (v0.5.2)
 
 [![CI](https://github.com/mitmirsein/horos/actions/workflows/ci.yml/badge.svg)](https://github.com/mitmirsein/horos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/deps-bash%20%2B%20python3%20stdlib-success.svg)](#platform-compatibility--requirements)
 
-**[English](README.md)** | **[한국어](README.ko.md)**
+[**English**](README.md) | [**한국어**](README.ko.md)
 
 Deterministic hook-based discipline layer for coding agents across **Claude Code**, **Antigravity 2.0**, **OpenAI Codex CLI**, and generic **POSIX exit-code** harnesses.
 
@@ -139,9 +139,12 @@ horos decide D1 "<why>" "<cost>" "<escape>" "src/app.py"                  # Reco
 horos aporia A1 "<pole1>|<pole2>" "<why_unresolved>" "<revisit_trigger>"  # Record unresolved design tension
 horos claim completion "<summary>" "src/app.py,tests/test_app.py" "D1" "tests_added,consistent_with_refs"
 horos doctor [target-dir]                                                 # Audit wiring, drift, and telemetry
+horos global-mode show | off | warn | block                               # Tier-1 global reversibility baseline (D34)
+horos install-global [--harness claude|agy|codex|all]                     # Wire global dispatchers across harnesses
+horos uninstall-global [--harness claude|agy|codex|all]                   # Cleanly remove global harness entries
 horos prune --days 14 [target-dir]                                        # Prune aged runtime logs and claims
 horos uninstall [--harness claude|agy|codex] <target-dir>                 # Cleanly remove horos hook entries
-bash tests/run.sh                                                         # Run 219-case hermetic test suite
+bash tests/run.sh                                                         # Run hermetic unit & boundary test suite
 ```
 
 ## Repository Layout
@@ -160,11 +163,12 @@ hooks/
   decision-guard.sh      Stop D-id / A-id comment reference verifier
   claim-guard.sh         Stop sha256 claim freshness & invariant verifier
   session-brief.sh       SessionStart compact protocol card injector (<= 15 lines)
-  agy-adapter.sh         Antigravity 2.0 bidirectional hook adapter
+  agy-adapter.sh         Antigravity 2.0 bidirectional hook adapter (local + --global)
+  codex-dispatch.sh      Codex CLI global opt-in & Tier-1 baseline dispatcher (D34)
   parent-bridge.sh       Parent workspace selective delegation bridge
-  plugin-dispatch.sh     Global plugin opt-in & precedence dispatcher
+  plugin-dispatch.sh     Claude global plugin opt-in & Tier-1 baseline dispatcher
   horos                  Unified management CLI
-tests/                   219 unit/boundary tests + 20 synthetic transcript fixtures
+tests/                   Hermetic unit/boundary tests + 20 synthetic transcript fixtures
 ```
 
 ## Platform Compatibility & Requirements
